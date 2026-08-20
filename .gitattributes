@@ -1,0 +1,6 @@
+# Normalise line endings so the repo stays LF regardless of contributor OS.
+* text=auto eol=lf
+
+# Generated — keep out of diffs and language stats.
+pnpm-lock.yaml linguist-generated=true -diff
+drizzle/meta/*.json linguist-generated=true -diff
