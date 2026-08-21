@@ -14,6 +14,9 @@ const eslintConfig = [
       'build/**',
       'node_modules/**',
       'drizzle/**',
+      // Supabase CLI scratch space: bundled runtime code, not ours.
+      'supabase/.temp/**',
+      'supabase/.branches/**',
       'next-env.d.ts',
     ],
   },
