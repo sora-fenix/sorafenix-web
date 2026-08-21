@@ -15,6 +15,20 @@
       "when": 1787205681104,
       "tag": "0001_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787214397827,
+      "tag": "0002_equal_whistler",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787214422943,
+      "tag": "0003_rls_domain",
+      "breakpoints": true
     }
   ]
 }
