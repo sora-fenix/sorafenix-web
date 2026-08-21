@@ -2,23 +2,27 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §3.
 
-**Last updated:** 2026-08-20
-**Phase:** 0 — Scaffold (complete)
+**Last updated:** 2026-08-21
+**Phase:** 1 — Data layer + read-only CRM (schema, RLS, seed, dashboard, leads)
 
 ---
 
 ## Where we are
 
-The foundation boots and is demo-able. No business logic exists yet, and no
-domain tables have been created. Everything in `docs/SPEC.md` §2–§9 is still
-ahead of us.
+The database is real. Every domain table from `docs/SPEC.md` exists, is
+protected by RLS, and is filled by a deterministic seed, so the product can be
+demoed end to end without a single external service. Two screens read live data;
+the other seven still show their Phase 0 empty state even though their queries
+are already written. No business logic (ingestion, scoring, generation, sending)
+exists yet.
 
 | Gate | Status |
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean (0 errors, 0 warnings) |
 | `pnpm test` | ✅ 17 tests, 2 files |
-| `pnpm build` | ✅ 18 routes |
+| `pnpm test:integration` | ✅ 22 tests, 2 files (needs `pnpm db:start`) |
+| `pnpm build` | ✅ 17 routes |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers not installed |
 
 ---
@@ -28,50 +32,106 @@ ahead of us.
 ### Tooling
 - Next.js **15.5.23** (App Router, RSC by default), React 19.2.8, TypeScript
   `strict` + `noUncheckedIndexedAccess` + `noImplicitOverride`.
-- Tailwind v4 + shadcn/ui (new-york, neutral). 11 components generated into
-  `components/ui/`, treated as vendor code.
+- Tailwind v4 + shadcn/ui (new-york, neutral), generated into `components/ui/`
+  and treated as vendor code. `badge`, `card`, `table` added in this phase.
 - ESLint flat config. `no-explicit-any`, `no-non-null-assertion`, and
   `consistent-type-assertions: never` are **errors** on our code — CLAUDE.md
-  rule 9 is enforced by the linter, not by review. `components/ui/**` is exempt.
-- Vitest (unit, `tests/unit`) and Playwright (e2e, `tests/e2e`) configured.
-- Scripts: `dev build start typecheck lint test test:watch test:e2e db:generate
-  db:migrate db:studio db:seed`.
+  rule 9 is enforced by the linter, not by review. `components/ui/**` and the
+  Supabase CLI scratch directories are exempt.
+- Vitest runs two suites: `tests/unit` (pure, default config) and
+  `tests/integration` (real Postgres, `vitest.integration.config.ts`, file
+  parallelism off because the seed rebuilds a shared workspace).
 
 ### Environment (rule 1)
 - `lib/env.ts` is the only file in the codebase that reads `process.env`.
-  Verified by grep; the single exception is `instrumentation.ts` reading
-  `NEXT_RUNTIME`, which is a Next runtime discriminator, not app config.
-- `instrumentation.ts` calls `serverEnv()` in `register()`, so a missing variable
-  kills the process **at boot**. Verified by removing `N8N_WEBHOOK_SECRET` and
-  starting the server: it fails with `N8N_WEBHOOK_SECRET is required`.
-- `.env.example` documents every variable with its dashboard location.
+  The single exception is `instrumentation.ts` reading `NEXT_RUNTIME`, a Next
+  runtime discriminator, not app config.
+- `instrumentation.ts` calls `serverEnv()` in `register()`, so a missing
+  variable kills the process **at boot**.
+- `.env.local` now points at the local Supabase stack with the CLI fixed demo
+  keys (not secrets, only ever valid against 127.0.0.1). `.env.example` still
+  documents where each value lives for a real project.
 
-### Data
-- `lib/db/schema.ts`: `workspaces` + `memberships` + `membership_role` and
-  `workspace_plan` enums. Nothing else.
-- `drizzle/0000_lame_psylocke.sql` — generated tables.
-- `drizzle/0001_rls.sql` — hand-written: FK to `auth.users`, two
-  `SECURITY DEFINER` helpers (`is_workspace_member`, `has_workspace_role`) with
-  a pinned `search_path`, and RLS enabled + forced on both tables.
-- **Neither migration has been run.** No database has been touched.
+### Local database
+- Supabase CLI added as a dev dependency; `supabase/config.toml` committed.
+- `pnpm db:start` / `db:stop` / `db:reset` (reset = recreate, migrate, seed).
+- Migrations `0000`–`0003` have been applied against it. The Phase 0 blocker
+  "no database has been touched" is closed.
+
+### Schema
+- `lib/db/schema.ts` split into `lib/db/schema/` — `workspace.ts`, `crm.ts`,
+  `outreach.ts`, `ai.ts`, re-exported from `index.ts`. `drizzle.config.ts`
+  points at the directory.
+- 15 tables: `workspaces`, `memberships`, `products`, `knowledge_docs`,
+  `integrations`, `companies`, `contacts`, `leads`, `activities`, `campaigns`,
+  `messages`, `sequence_runs`, `suppressions`, `ai_runs`, `webhook_events`.
+  Every domain table carries `workspace_id` (rule 6).
+- `drizzle/0002_equal_whistler.sql` — generated tables and enums.
+- `drizzle/0003_rls_domain.sql` — hand-written: FKs to `auth.users`
+  (`ON DELETE SET NULL`, so losing a salesperson never deletes their leads),
+  explicit grants to `authenticated`, and 13 policies. RLS is enabled **and
+  forced** on every table. Policies are written out per table rather than
+  generated in a loop, so grepping for a table name shows the policy guarding
+  it. `is_workspace_member()` from `0001_rls.sql` keeps the `memberships`
+  policy from recursing through itself.
+
+### Seed
+- `scripts/seed.ts` (row builders) + `scripts/seed-data.ts` (Indonesian
+  vocabulary, templates, scoring bands). Deterministic — UUIDv5 from a fixed
+  namespace and a seeded RNG — and **idempotent**, asserted by a test.
+- Workspace `maju-bersama` (PT Maju Bersama Digital), three real Supabase auth
+  users pre-confirmed as owner / manager / sales.
+- 60 companies + 60 contacts + 60 leads covering every lead status, scores
+  spread across the SPEC hot/warm/cold bands, `score_factors` that sum to the
+  stored score, and reasons written in Bahasa Indonesia.
+- 90 messages (drafts waiting in approvals, replies waiting in the inbox),
+  150 activities, 25 sequence runs, 5 suppressions, 12 `ai_runs`,
+  3 `webhook_events`, 2 campaigns, 1 product, 3 knowledge docs, 2 integrations.
+- Phones are stored canonical E.164 with the scraped `08xx` form kept in `raw`.
+
+### Query layer
+- `lib/db/queries/dashboard.ts` — stats, funnel, due-lead queue, recent
+  activities, pending approvals, new leads this month.
+- `lib/db/queries/records.ts` — list functions for leads, companies, contacts,
+  campaigns, inbox, approvals, knowledge docs, members, integrations,
+  suppressions, product count.
+- Every function takes `workspaceId` and filters on it. This is load-bearing,
+  not stylistic: Drizzle connects privileged and bypasses RLS (known issue 1).
+
+### UI
+- Dashboard reads live data: stat cards, funnel, due-lead queue with overdue
+  marking, recent activity feed, pending approval count.
+- Leads list reads live data: table with status and score-category badges.
+- `components/crm/labels.tsx` holds the shared Indonesian labels and badges
+  (lead status, activity type, actor, score category). `lib/format.ts` holds
+  number/date/percent formatting and `isOverdue`.
+- Sidebar (9 sections) + topbar with workspace switcher and user menu; collapses
+  to icons on desktop, to a sheet on mobile. All copy is Bahasa Indonesia; route
+  slugs stay English. The seven unwired pages keep their designed empty state.
 
 ### Auth
 - Supabase magic link. Server action → `signInWithOtp` → `/auth/callback`
   exchanges the PKCE code → redirects to `?next=`.
-- `?next=` accepts relative paths only (checked in three places: the login page,
-  the server action's Zod schema, and the callback route). No open redirect.
-- `middleware.ts` matches `/app/:path*`, refreshes the session with
-  `getUser()` (not `getSession()` — that trusts the cookie), and redirects
-  signed-out users to `/login?next=…` carrying refreshed cookies through.
+- `?next=` accepts relative paths only, checked in three places. No open
+  redirect.
+- `middleware.ts` matches `/app/:path*`, refreshes the session with `getUser()`
+  (not `getSession()` — that trusts the cookie), and redirects signed-out users
+  to `/login?next=…` carrying refreshed cookies through.
 - `app/app/[workspace]/layout.tsx` does the membership check. A non-member and a
   non-existent slug both get the same `notFound()`, so slugs cannot be probed.
 
-### UI
-- Sidebar (9 sections) + topbar with workspace switcher and user menu. Collapses
-  to icons on desktop, to a sheet on mobile.
-- All copy is Bahasa Indonesia; route slugs stay English.
-- Every module page ships a designed empty state naming the module that will
-  fill it. `loading.tsx`, `error.tsx`, `not-found.tsx` present.
+### Tests
+- `tests/integration/rls.test.ts` — asserts RLS is enabled, forced, and policied
+  on every table in `public`, cross-checked against the live catalogue so a new
+  unlisted table fails the suite. Then, under `SET LOCAL ROLE authenticated`,
+  proves cross-workspace reads, updates, deletes, inserts, and
+  workspace-relabelling are all denied, symmetrically, and that a user with no
+  membership sees nothing. One test documents that the privileged connection
+  bypasses RLS on purpose.
+- `tests/integration/seed.test.ts` — row counts per table, the three roles as
+  real auth users, every lead status present, score bands, `score_factors`
+  summing to the score, Indonesian reasons, E.164 phones, drafts and replies in
+  the right queues, and a second run changing nothing.
 
 ---
 
@@ -80,18 +140,19 @@ ahead of us.
 Recommended order. One vertical slice at a time (schema → server logic → API →
 UI → test), nothing started until the previous slice is green.
 
-1. **Unblock the database** (see Blocked below) — nothing else can be verified
-   end to end until this is done.
+1. **Wire the remaining module pages.** Companies, contacts, campaigns, inbox,
+   approvals, knowledge and settings all have queries in
+   `lib/db/queries/records.ts` and still render an empty state. Cheapest
+   possible win, and it makes the whole product demo-able.
 2. **Workspace provisioning** — create a workspace on first sign-in, or an
-   invite flow. Right now a brand-new user lands on "Anda belum punya workspace"
-   and can only be rescued by `pnpm db:seed`.
+   invite flow. A brand-new user still lands on "Anda belum punya workspace" and
+   can only be rescued by `pnpm db:seed`.
 3. **Module 1 — lead ingestion.** `POST /api/webhooks/n8n/leads`, HMAC
    verification, `webhook_events` idempotency, `lib/leads/dedupe.ts` (unit
-   tested: domain → phone → email → fuzzy name+city). Brings in the `companies`,
-   `contacts`, `campaigns`, and `webhook_events` tables.
+   tested: domain → phone → email → fuzzy name+city). Tables already exist.
 4. **Module 3 — qualification.** `lib/ai/agent.ts` + `ai_runs` first, then
    `lib/scoring/rubric.ts`. The model returns per-factor sub-scores only; code
-   computes the weighted total.
+   computes the weighted total. The seed already writes rows in that shape.
 5. **Module 5 + approvals** — content generation with `needs_input` gating.
 6. **`lib/outreach/send-guard.ts`** — before any provider adapter exists, so
    there is never a code path that sends without it.
@@ -102,17 +163,14 @@ UI → test), nothing started until the previous slice is green.
 
 | Item | Needs |
 |---|---|
-| `pnpm db:migrate` | A Supabase project. Migrations are written and committed but have never run. |
-| Auth end to end | Same. Plus adding `http://localhost:3000/auth/callback` under Supabase → Authentication → URL Configuration → Redirect URLs. |
 | `pnpm test:e2e` | `pnpm exec playwright install chromium` (~150 MB download). Deliberately not run. |
 
-**To unblock:** create a Supabase project, replace the placeholder values in
-`.env.local` with real ones (see `.env.example` for where each lives), then:
+**To run the stack from scratch:**
 
 ```
-pnpm db:migrate          # applies 0000 + 0001
-pnpm dev                 # sign in at /login
-pnpm db:seed you@company.com   # after the first sign-in creates your auth user
+pnpm db:start            # Supabase CLI (Docker)
+pnpm db:reset            # recreate, apply 0000-0003, seed
+pnpm dev                 # sign in at /login, mail lands in Inbucket
 ```
 
 ---
@@ -122,11 +180,11 @@ pnpm db:seed you@company.com   # after the first sign-in creates your auth user
 1. **Drizzle bypasses RLS.** `lib/db/drizzle.ts` connects with `DATABASE_URL`, a
    privileged role. RLS protects the Supabase-client path only. Every Drizzle
    query must filter by `workspace_id` in application code — a missing filter is
-   a security bug, not a style nit. Flagged in the file's header comment.
-   Revisit if we later want `SET LOCAL role` per request.
-2. **`.env.local` holds placeholder values**, so the app boots but cannot reach
-   Supabase or Postgres. Any page that queries the database will error until
-   real credentials are in place. This is expected in Phase 0.
+   a security bug, not a style nit. Flagged in the file header comment, and
+   pinned by an integration test that documents the bypass. Revisit if we later
+   want `SET LOCAL role` per request.
+2. **Seven module pages are still empty states** while their queries exist.
+   Covered as next-up item 1.
 3. **No workspace creation path.** Covered as next-up item 2.
 4. **`listUsers({ perPage: 1000 })` in `scripts/seed.ts`** does not paginate.
    Fine for a dev seed, wrong for anything else.
@@ -141,9 +199,12 @@ pnpm db:seed you@company.com   # after the first sign-in creates your auth user
 | 2 | Integration env vars are `.optional()` for now | Gmail/WhatsApp/LLM credentials do not exist yet; requiring them would mean nothing boots. Each is promoted to required in the phase that ships its module. Core vars (Supabase, `DATABASE_URL`, `N8N_WEBHOOK_SECRET`) are hard-required today. |
 | 3 | Pinned **Next.js 15**, not 16 | `create-next-app` now emits Next 16.3.1, but CLAUDE.md §1 specifies Next 15 and says not to change the stack without asking. Pinned to 15.5.23. **Open question for the owner** — 16 is stable and this is the cheapest moment to move. |
 | 4 | Server env exposed as `serverEnv()`, not a bare `env` const | `lib/env.ts` is imported by client components for `publicEnv`. A top-level server parse would throw in the browser. A function call keeps everything in one file (rule 1) with no `Proxy` and no type assertion. |
-| 5 | RLS lives in a hand-written migration | drizzle-kit does not emit RLS policies, and the FK to `auth.users` must not tempt drizzle-kit into managing Supabase's `auth` schema. |
-| 6 | `next-themes` removed | Pulled in transitively by shadcn's `sonner`. Rewrote `components/ui/sonner.tsx` to drop it rather than accept an unapproved dependency for a dark-mode toggle we have not built. |
+| 5 | RLS lives in hand-written migrations (`0001`, `0003`) | drizzle-kit does not emit RLS policies, and the FKs to `auth.users` must not tempt drizzle-kit into managing the Supabase `auth` schema. |
+| 6 | `next-themes` removed | Pulled in transitively by the shadcn `sonner`. Rewrote `components/ui/sonner.tsx` to drop it rather than accept an unapproved dependency for a dark-mode toggle we have not built. |
 | 7 | `typedRoutes` left off | It cannot type the dynamically built `/app/${slug}/${segment}` hrefs without a cast, and casts are banned by rule 9. |
+| 8 | Local Postgres via the Supabase CLI, not a hosted project | Migrations, RLS and the seed can be verified — and reset — offline, and the integration suite runs on any machine with Docker. A hosted project is still the target for staging. |
+| 9 | Schema split into `lib/db/schema/` by domain | One file was already 15 tables away from unreadable. `drizzle.config.ts` accepts a directory, so nothing else changed. CLAUDE.md §4 lists `schema.ts`; the directory supersedes it. |
+| 10 | The seed is deterministic and idempotent | UUIDv5 over a fixed namespace plus a seeded RNG means re-running it never duplicates rows and every test can assert exact counts. It also keeps screenshots stable across machines. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
@@ -151,6 +212,9 @@ Approved with the Phase 0 plan: `server-only` (makes rule 6 a build error),
 `typescript-eslint` (makes rule 9 a lint error), `sonner` (toast), `tsx` (runs
 `scripts/seed.ts`), `dotenv` (env for drizzle-kit and scripts), `tw-animate-css`
 (required by the shadcn components we generated).
+
+Added in Phase 1: `supabase` (the CLI, dev dependency — runs the local Postgres
+the integration suite tests against).
 
 `pnpm` itself was installed globally via npm — `corepack enable` failed with
 EPERM against `C:\Program Files\nodejs`.
