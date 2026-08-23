@@ -2,7 +2,7 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §3.
 
-**Last updated:** 2026-08-21
+**Last updated:** 2026-08-23
 **Phase:** 1 — Data layer + read-only CRM (schema, RLS, seed, dashboard, leads)
 
 ---
@@ -48,9 +48,18 @@ exists yet.
   runtime discriminator, not app config.
 - `instrumentation.ts` calls `serverEnv()` in `register()`, so a missing
   variable kills the process **at boot**.
-- `.env.local` now points at the local Supabase stack with the CLI fixed demo
-  keys (not secrets, only ever valid against 127.0.0.1). `.env.example` still
-  documents where each value lives for a real project.
+- `.env.local` points at the local Supabase stack using the **new** Supabase key
+  format: `sb_publishable_…` replaces the anon JWT, `sb_secret_…` replaces the
+  service_role JWT. Variable names are unchanged — only the value shape is.
+  `lib/env.ts` needed no edit for this: it validates both keys as
+  `z.string().min(1)`, never as a JWT, so neither format is privileged. Values
+  are only ever valid against 127.0.0.1.
+- Optional integration vars are **commented out**, never set to `""`.
+  `z.string().min(1).optional()` accepts `undefined` but rejects the empty
+  string, and dotenv loads `FOO=""` as `''` — so a blank placeholder crashes
+  `serverEnv()` at boot. `.env.example` shipped exactly that trap (it told the
+  reader to copy it and fill in `""` placeholders); both files now comment the
+  line out instead. See decision 11.
 
 ### Local database
 - Supabase CLI added as a dev dependency; `supabase/config.toml` committed.
@@ -205,6 +214,7 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 | 8 | Local Postgres via the Supabase CLI, not a hosted project | Migrations, RLS and the seed can be verified — and reset — offline, and the integration suite runs on any machine with Docker. A hosted project is still the target for staging. |
 | 9 | Schema split into `lib/db/schema/` by domain | One file was already 15 tables away from unreadable. `drizzle.config.ts` accepts a directory, so nothing else changed. CLAUDE.md §4 lists `schema.ts`; the directory supersedes it. |
 | 10 | The seed is deterministic and idempotent | UUIDv5 over a fixed namespace plus a seeded RNG means re-running it never duplicates rows and every test can assert exact counts. It also keeps screenshots stable across machines. |
+| 11 | Env files comment out unset optional vars instead of writing `""` | `.optional()` in Zod means "may be `undefined`", not "may be blank". dotenv turns `FOO=""` into `''`, which then fails `.min(1)` (or `z.url()`) and kills the boot that rule 1 deliberately makes fatal. Verified against the real `.env.local`: optional keys now parse to `undefined`. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
