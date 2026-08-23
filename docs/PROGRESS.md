@@ -3,7 +3,7 @@
 Current state and next steps. Updated after every task, per CLAUDE.md §3.
 
 **Last updated:** 2026-08-23
-**Phase:** 1 — Data layer + read-only CRM (schema, RLS, seed, dashboard, leads)
+**Phase:** 1 — Data layer + read-only CRM (schema, RLS, seed, all nine screens)
 
 ---
 
@@ -11,10 +11,10 @@ Current state and next steps. Updated after every task, per CLAUDE.md §3.
 
 The database is real. Every domain table from `docs/SPEC.md` exists, is
 protected by RLS, and is filled by a deterministic seed, so the product can be
-demoed end to end without a single external service. Two screens read live data;
-the other seven still show their Phase 0 empty state even though their queries
-are already written. No business logic (ingestion, scoring, generation, sending)
-exists yet.
+demoed end to end without a single external service. All nine module screens now
+read live data — the Phase 0 placeholders are gone. No business logic (ingestion,
+scoring, generation, sending) exists yet: every screen is read-only, and nothing
+in the product can create, edit, approve, or send anything.
 
 | Gate | Status |
 |---|---|
@@ -111,6 +111,25 @@ exists yet.
 - Dashboard reads live data: stat cards, funnel, due-lead queue with overdue
   marking, recent activity feed, pending approval count.
 - Leads list reads live data: table with status and score-category badges.
+- The other seven screens are wired to `lib/db/queries/records.ts`, all following
+  the Leads shape (`getWorkspaceContext` → `notFound()` → query → empty state or
+  table, inside `overflow-x-auto` with columns dropped at `sm`/`md`/`lg`):
+  Perusahaan, Kontak and Kampanye are tables; Kotak Masuk and Persetujuan are
+  card lists; Basis Pengetahuan groups documents under type headings; Pengaturan
+  is sections rather than one table.
+- Persetujuan surfaces the query's `needs_input`-first ordering as a banner
+  counting drafts the AI could not complete from `knowledge_docs` (rule 3), and
+  says plainly that approve/reject arrives with Modul 5.
+- Pengaturan shows workspace identity, sending limits, `autonomousMode` (marked
+  non-aktif and explicitly not wired to skip approval, rule 5), members,
+  integrations and suppressions.
+- `lib/auth/members.ts` joins `memberships` to Supabase Auth: `memberships`
+  stores only `user_id`, so `listMembersWithEmail()` resolves emails through
+  `lib/db/admin.ts`. Allowed under rule 6 — `admin.ts` is `server-only` and the
+  caller renders under the authed workspace layout. Degrades to `email: null`
+  rather than throwing when the auth call fails.
+- `components/layout/module-placeholder.tsx` deleted; nothing imported it once
+  the last screen was wired.
 - `components/crm/labels.tsx` holds the shared Indonesian labels and badges
   (lead status, activity type, actor, score category). `lib/format.ts` holds
   number/date/percent formatting and `isOverdue`.
@@ -149,21 +168,17 @@ exists yet.
 Recommended order. One vertical slice at a time (schema → server logic → API →
 UI → test), nothing started until the previous slice is green.
 
-1. **Wire the remaining module pages.** Companies, contacts, campaigns, inbox,
-   approvals, knowledge and settings all have queries in
-   `lib/db/queries/records.ts` and still render an empty state. Cheapest
-   possible win, and it makes the whole product demo-able.
-2. **Workspace provisioning** — create a workspace on first sign-in, or an
+1. **Workspace provisioning** — create a workspace on first sign-in, or an
    invite flow. A brand-new user still lands on "Anda belum punya workspace" and
    can only be rescued by `pnpm db:seed`.
-3. **Module 1 — lead ingestion.** `POST /api/webhooks/n8n/leads`, HMAC
+2. **Module 1 — lead ingestion.** `POST /api/webhooks/n8n/leads`, HMAC
    verification, `webhook_events` idempotency, `lib/leads/dedupe.ts` (unit
    tested: domain → phone → email → fuzzy name+city). Tables already exist.
-4. **Module 3 — qualification.** `lib/ai/agent.ts` + `ai_runs` first, then
+3. **Module 3 — qualification.** `lib/ai/agent.ts` + `ai_runs` first, then
    `lib/scoring/rubric.ts`. The model returns per-factor sub-scores only; code
    computes the weighted total. The seed already writes rows in that shape.
-5. **Module 5 + approvals** — content generation with `needs_input` gating.
-6. **`lib/outreach/send-guard.ts`** — before any provider adapter exists, so
+4. **Module 5 + approvals** — content generation with `needs_input` gating.
+5. **`lib/outreach/send-guard.ts`** — before any provider adapter exists, so
    there is never a code path that sends without it.
 
 ---
@@ -192,11 +207,12 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
    a security bug, not a style nit. Flagged in the file header comment, and
    pinned by an integration test that documents the bypass. Revisit if we later
    want `SET LOCAL role` per request.
-2. **Seven module pages are still empty states** while their queries exist.
-   Covered as next-up item 1.
-3. **No workspace creation path.** Covered as next-up item 2.
-4. **`listUsers({ perPage: 1000 })` in `scripts/seed.ts`** does not paginate.
-   Fine for a dev seed, wrong for anything else.
+2. **No workspace creation path.** Covered as next-up item 1.
+3. **`listUsers({ perPage: 1000 })` does not paginate.** Two callers now:
+   `scripts/seed.ts` and `listMembersWithEmail()` in `lib/auth/members.ts`. Fine
+   for a dev seed and a handful of members; fix with the invite flow.
+4. **Every screen is read-only.** No forms, server actions, or mutations exist
+   anywhere in the product yet — including approve/reject on Persetujuan.
 
 ---
 

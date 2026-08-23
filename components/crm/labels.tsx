@@ -122,11 +122,86 @@ export const CAMPAIGN_STATUS_LABELS: Record<string, string> = {
   done: 'Selesai',
 }
 
+const CAMPAIGN_STATUS_TONE: Record<string, string> = {
+  running: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200',
+  paused: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200',
+  done: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
+}
+
+export function CampaignStatusBadge({ status }: { status: string }) {
+  return (
+    <Badge
+      variant="secondary"
+      className={cn('border-transparent font-medium', CAMPAIGN_STATUS_TONE[status])}
+    >
+      {CAMPAIGN_STATUS_LABELS[status] ?? status}
+    </Badge>
+  )
+}
+
 export const EMAIL_STATUS_LABELS: Record<string, string> = {
   unknown: 'Belum diverifikasi',
   valid: 'Valid',
   invalid: 'Tidak valid',
   bounced: 'Bounce',
+}
+
+const EMAIL_STATUS_TONE: Record<string, string> = {
+  valid: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200',
+  invalid: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200',
+  bounced: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200',
+}
+
+export function EmailStatusBadge({ status }: { status: string }) {
+  return (
+    <Badge
+      variant="secondary"
+      className={cn('border-transparent font-medium', EMAIL_STATUS_TONE[status])}
+    >
+      {EMAIL_STATUS_LABELS[status] ?? status}
+    </Badge>
+  )
+}
+
+export const INTEGRATION_STATUS_LABELS: Record<string, string> = {
+  connected: 'Terhubung',
+  disconnected: 'Belum terhubung',
+  error: 'Bermasalah',
+}
+
+const INTEGRATION_STATUS_TONE: Record<string, string> = {
+  connected: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200',
+  disconnected: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
+  error: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200',
+}
+
+export function IntegrationStatusBadge({ status }: { status: string }) {
+  return (
+    <Badge
+      variant="secondary"
+      className={cn('border-transparent font-medium', INTEGRATION_STATUS_TONE[status])}
+    >
+      {INTEGRATION_STATUS_LABELS[status] ?? status}
+    </Badge>
+  )
+}
+
+export const PROVIDER_LABELS: Record<string, string> = {
+  gmail: 'Gmail',
+  whatsapp: 'WhatsApp',
+  serper: 'Serper',
+}
+
+export const SUPPRESSION_KIND_LABELS: Record<string, string> = {
+  email: 'Email',
+  phone: 'Nomor telepon',
+  domain: 'Domain',
+}
+
+export const PLAN_LABELS: Record<string, string> = {
+  free: 'Gratis',
+  pro: 'Pro',
+  business: 'Bisnis',
 }
 
 export const CHANNEL_LABELS: Record<string, string> = {
