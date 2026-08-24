@@ -50,3 +50,6 @@ next-env.d.ts
 # editors
 .vscode/
 .idea/
+
+# claude code — the harness in .claude/ is committed; personal overrides are not
+.claude/settings.local.json
