@@ -19,16 +19,18 @@ in the product can create, edit, approve, or send anything.
 
 | Gate | Status |
 |---|---|
-| `pnpm typecheck` | ⚠️ green as of 2026-08-23, **not re-run** after the `src/` move |
-| `pnpm lint` | ⚠️ green as of 2026-08-23, **not re-run** after the `src/` move |
-| `pnpm test` | ⚠️ 17 tests green as of 2026-08-23, **not re-run** |
-| `pnpm test:integration` | ⚠️ 22 tests green as of 2026-08-23, **not re-run** |
-| `pnpm build` | ⚠️ 17 routes as of 2026-08-23, **not re-run** |
+| `pnpm typecheck` | ✅ clean, re-run 2026-08-24 after the `src/` move |
+| `pnpm lint` | ✅ clean, 0 errors 0 warnings, re-run 2026-08-24 |
+| `pnpm test` | ✅ 17 tests, 2 files, re-run 2026-08-24 |
+| `pnpm build` | ⚠️ compiles clean in 8.8s, then fails collecting page data |
+| `pnpm test:integration` | ⛔ needs Docker, which is not installed on this machine |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers not installed |
 
-**The whole gate is stale.** Node and `node_modules/` are absent from the
-development machine as of 2026-08-24, so nothing could be executed during the
-`src/` restructure. See Blocked. Re-run all five before starting Phase 2.
+The `src/` move is verified: `next build` resolves every alias, compiles all
+routes and passes its own type check. The build then stops at
+`/auth/callback` because `.env.local` does not exist on this machine, so
+`publicEnv` has nothing to parse. That is rule 1 behaving exactly as designed,
+not a regression — restore `.env.local` and the build completes.
 
 ---
 
@@ -213,9 +215,9 @@ UI → test), nothing started until the previous slice is green.
 
 | Item | Needs |
 |---|---|
-| **Every `pnpm` script** | Node.js is not on this machine's PATH and `node_modules/` does not exist (2026-08-24). `node`, `npm` and `pnpm` all resolve to nothing; the machine PATH has no nodejs entry. Reinstall Node, then `pnpm install`. Until then no gate can run. |
-| `pnpm test:e2e` | `pnpm exec playwright install chromium` (~150 MB download). Deliberately not run. |
-| Git identity | `user.name` / `user.email` are unset in this repo and globally, though every earlier commit is authored by `pilemon31 <barimbingpilemon@gmail.com>`. The 2026-08-24 commits pass that identity inline with `git -c`; set it properly with `git config user.email …` to avoid repeating the flag. |
+| **`.env.local`** | The file does not exist on this machine — it is gitignored, so it was never in the repo. Without it `pnpm build` and `pnpm dev` die at boot by design (rule 1). Recreate it from `.env.example` with the values `pnpm db:start` prints. |
+| `pnpm test:integration` | Docker is not installed on this machine, so the local Supabase stack (`pnpm db:start`) cannot run. Install Docker Desktop, then `pnpm db:start && pnpm db:reset`. |
+| `pnpm test:e2e` | `pnpm exec playwright install chromium` (~150 MB download). Deliberately not run. Also needs `.env.local` and a dev server. |
 
 **To run the stack from scratch:**
 
