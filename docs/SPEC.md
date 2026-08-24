@@ -53,7 +53,7 @@ webhook_events      provider, idempotency_key unique, payload jsonb, processed_a
 **Lead status enum (single source of truth):**
 `new → qualified → contacted → replied → interested → meeting → proposal → negotiation → won | lost | do_not_contact`
 
-Transitions are only made by `lib/crm/status.ts`. Nothing else writes `leads.status`.
+Transitions are only made by `src/lib/crm/status.ts`. Nothing else writes `leads.status`.
 
 ---
 
@@ -83,7 +83,7 @@ Header: `x-sora-signature: sha256=<hmac of raw body using N8N_WEBHOOK_SECRET>`
 
 Response: `{ accepted, inserted, duplicates, rejected: [{index, reason}] }`
 
-**Dedupe** (`lib/leads/dedupe.ts`, unit tested) — match in this order, first hit wins:
+**Dedupe** (`src/lib/leads/dedupe.ts`, unit tested) — match in this order, first hit wins:
 1. normalised domain (strip `www.`, protocol, path, lowercase)
 2. normalised phone (E.164; Indonesian `08xx` / `62xx` / `+62xx` all collapse to `+62xx`)
 3. normalised email
@@ -109,7 +109,7 @@ Job `enrich_company`. For a company with a website:
 
 ## 4. Module 3 — AI Qualification
 
-`lib/scoring/rubric.ts` — deterministic weights from the PRD:
+`src/lib/scoring/rubric.ts` — deterministic weights from the PRD:
 
 | Factor | Weight |
 |---|---|
@@ -168,7 +168,7 @@ Default sequence (editable per campaign):
 | 4 | 14 | Task: call recommendation (human) |
 | 5 | 30 | Close or move to nurture |
 
-`lib/sequences/state-machine.ts` is a pure function `(run, event) → nextRun` — fully unit tested, no I/O.
+`src/lib/sequences/state-machine.ts` is a pure function `(run, event) → nextRun` — fully unit tested, no I/O.
 
 **Hard stop conditions:** contact replied · opted out · meeting booked · status ≥ `interested` · email bounced · WhatsApp number invalid · campaign paused.
 Stopping writes `stop_reason`. A stopped run never resumes automatically.

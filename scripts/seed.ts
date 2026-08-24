@@ -58,7 +58,7 @@ import {
   slugifyCompany,
   type FitLevel,
 } from './seed-data'
-import * as schema from '../lib/db/schema'
+import * as schema from '../src/lib/db/schema'
 
 config({ path: '.env.local', quiet: true })
 
@@ -653,7 +653,7 @@ function buildSequenceRuns(
 // -----------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const { publicEnv, serverEnv } = await import('../lib/env')
+  const { publicEnv, serverEnv } = await import('../src/lib/env')
   const env = serverEnv()
 
   if (env.NODE_ENV === 'production' && !process.argv.includes('--force')) {
