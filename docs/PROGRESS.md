@@ -1,9 +1,10 @@
 # SORA — Progress
 
-Current state and next steps. Updated after every task, per CLAUDE.md §3.
+Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-08-23
-**Phase:** 1 — Data layer + read-only CRM (schema, RLS, seed, all nine screens)
+**Last updated:** 2026-08-24
+**Phase:** 1 — Data layer + read-only CRM (schema, RLS, seed, all nine screens),
+followed by a structure and tooling pass (no product change)
 
 ---
 
@@ -18,12 +19,16 @@ in the product can create, edit, approve, or send anything.
 
 | Gate | Status |
 |---|---|
-| `pnpm typecheck` | ✅ clean |
-| `pnpm lint` | ✅ clean (0 errors, 0 warnings) |
-| `pnpm test` | ✅ 17 tests, 2 files |
-| `pnpm test:integration` | ✅ 22 tests, 2 files (needs `pnpm db:start`) |
-| `pnpm build` | ✅ 17 routes |
+| `pnpm typecheck` | ⚠️ green as of 2026-08-23, **not re-run** after the `src/` move |
+| `pnpm lint` | ⚠️ green as of 2026-08-23, **not re-run** after the `src/` move |
+| `pnpm test` | ⚠️ 17 tests green as of 2026-08-23, **not re-run** |
+| `pnpm test:integration` | ⚠️ 22 tests green as of 2026-08-23, **not re-run** |
+| `pnpm build` | ⚠️ 17 routes as of 2026-08-23, **not re-run** |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers not installed |
+
+**The whole gate is stale.** Node and `node_modules/` are absent from the
+development machine as of 2026-08-24, so nothing could be executed during the
+`src/` restructure. See Blocked. Re-run all five before starting Phase 2.
 
 ---
 
@@ -32,18 +37,18 @@ in the product can create, edit, approve, or send anything.
 ### Tooling
 - Next.js **15.5.23** (App Router, RSC by default), React 19.2.8, TypeScript
   `strict` + `noUncheckedIndexedAccess` + `noImplicitOverride`.
-- Tailwind v4 + shadcn/ui (new-york, neutral), generated into `components/ui/`
+- Tailwind v4 + shadcn/ui (new-york, neutral), generated into `src/components/ui/`
   and treated as vendor code. `badge`, `card`, `table` added in this phase.
 - ESLint flat config. `no-explicit-any`, `no-non-null-assertion`, and
   `consistent-type-assertions: never` are **errors** on our code — CLAUDE.md
-  rule 9 is enforced by the linter, not by review. `components/ui/**` and the
+  rule 9 is enforced by the linter, not by review. `src/components/ui/**` and the
   Supabase CLI scratch directories are exempt.
 - Vitest runs two suites: `tests/unit` (pure, default config) and
   `tests/integration` (real Postgres, `vitest.integration.config.ts`, file
   parallelism off because the seed rebuilds a shared workspace).
 
 ### Environment (rule 1)
-- `lib/env.ts` is the only file in the codebase that reads `process.env`.
+- `src/lib/env.ts` is the only file in the codebase that reads `process.env`.
   The single exception is `instrumentation.ts` reading `NEXT_RUNTIME`, a Next
   runtime discriminator, not app config.
 - `instrumentation.ts` calls `serverEnv()` in `register()`, so a missing
@@ -51,7 +56,7 @@ in the product can create, edit, approve, or send anything.
 - `.env.local` points at the local Supabase stack using the **new** Supabase key
   format: `sb_publishable_…` replaces the anon JWT, `sb_secret_…` replaces the
   service_role JWT. Variable names are unchanged — only the value shape is.
-  `lib/env.ts` needed no edit for this: it validates both keys as
+  `src/lib/env.ts` needed no edit for this: it validates both keys as
   `z.string().min(1)`, never as a JWT, so neither format is privileged. Values
   are only ever valid against 127.0.0.1.
 - Optional integration vars are **commented out**, never set to `""`.
@@ -68,7 +73,7 @@ in the product can create, edit, approve, or send anything.
   "no database has been touched" is closed.
 
 ### Schema
-- `lib/db/schema.ts` split into `lib/db/schema/` — `workspace.ts`, `crm.ts`,
+- `src/lib/db/schema.ts` split into `src/lib/db/schema/` — `workspace.ts`, `crm.ts`,
   `outreach.ts`, `ai.ts`, re-exported from `index.ts`. `drizzle.config.ts`
   points at the directory.
 - 15 tables: `workspaces`, `memberships`, `products`, `knowledge_docs`,
@@ -99,9 +104,9 @@ in the product can create, edit, approve, or send anything.
 - Phones are stored canonical E.164 with the scraped `08xx` form kept in `raw`.
 
 ### Query layer
-- `lib/db/queries/dashboard.ts` — stats, funnel, due-lead queue, recent
+- `src/lib/db/queries/dashboard.ts` — stats, funnel, due-lead queue, recent
   activities, pending approvals, new leads this month.
-- `lib/db/queries/records.ts` — list functions for leads, companies, contacts,
+- `src/lib/db/queries/records.ts` — list functions for leads, companies, contacts,
   campaigns, inbox, approvals, knowledge docs, members, integrations,
   suppressions, product count.
 - Every function takes `workspaceId` and filters on it. This is load-bearing,
@@ -111,7 +116,7 @@ in the product can create, edit, approve, or send anything.
 - Dashboard reads live data: stat cards, funnel, due-lead queue with overdue
   marking, recent activity feed, pending approval count.
 - Leads list reads live data: table with status and score-category badges.
-- The other seven screens are wired to `lib/db/queries/records.ts`, all following
+- The other seven screens are wired to `src/lib/db/queries/records.ts`, all following
   the Leads shape (`getWorkspaceContext` → `notFound()` → query → empty state or
   table, inside `overflow-x-auto` with columns dropped at `sm`/`md`/`lg`):
   Perusahaan, Kontak and Kampanye are tables; Kotak Masuk and Persetujuan are
@@ -123,15 +128,15 @@ in the product can create, edit, approve, or send anything.
 - Pengaturan shows workspace identity, sending limits, `autonomousMode` (marked
   non-aktif and explicitly not wired to skip approval, rule 5), members,
   integrations and suppressions.
-- `lib/auth/members.ts` joins `memberships` to Supabase Auth: `memberships`
+- `src/lib/auth/members.ts` joins `memberships` to Supabase Auth: `memberships`
   stores only `user_id`, so `listMembersWithEmail()` resolves emails through
-  `lib/db/admin.ts`. Allowed under rule 6 — `admin.ts` is `server-only` and the
+  `src/lib/db/admin.ts`. Allowed under rule 6 — `admin.ts` is `server-only` and the
   caller renders under the authed workspace layout. Degrades to `email: null`
   rather than throwing when the auth call fails.
-- `components/layout/module-placeholder.tsx` deleted; nothing imported it once
+- `src/components/layout/module-placeholder.tsx` deleted; nothing imported it once
   the last screen was wired.
-- `components/crm/labels.tsx` holds the shared Indonesian labels and badges
-  (lead status, activity type, actor, score category). `lib/format.ts` holds
+- `src/components/crm/labels.tsx` holds the shared Indonesian labels and badges
+  (lead status, activity type, actor, score category). `src/lib/format.ts` holds
   number/date/percent formatting and `isOverdue`.
 - Sidebar (9 sections) + topbar with workspace switcher and user menu; collapses
   to icons on desktop, to a sheet on mobile. All copy is Bahasa Indonesia; route
@@ -145,7 +150,7 @@ in the product can create, edit, approve, or send anything.
 - `middleware.ts` matches `/app/:path*`, refreshes the session with `getUser()`
   (not `getSession()` — that trusts the cookie), and redirects signed-out users
   to `/login?next=…` carrying refreshed cookies through.
-- `app/app/[workspace]/layout.tsx` does the membership check. A non-member and a
+- `src/app/app/[workspace]/layout.tsx` does the membership check. A non-member and a
   non-existent slug both get the same `notFound()`, so slugs cannot be probed.
 
 ### Tests
@@ -161,6 +166,27 @@ in the product can create, edit, approve, or send anything.
   summing to the score, Indonesian reasons, E.164 phones, drafts and replies in
   the right queues, and a second run changing nothing.
 
+### Structure and harness (2026-08-24, no product change)
+
+- **Application code moved into `src/`.** `app/`, `components/`, `lib/`, `hooks/`,
+  `middleware.ts` and `instrumentation.ts` now live under `src/`; the repository
+  root holds config, `docs/`, `drizzle/`, `scripts/`, `supabase/` and `tests/`.
+  Six config files changed one line each (tsconfig paths, `components.json` css,
+  drizzle-kit schema dir, the `@` alias in both vitest configs, and the eslint
+  glob block, which collapsed from six globs to `src/**`). `scripts/seed.ts` is
+  the only source file touched — it reaches `lib/` relatively because `tsx` runs
+  it outside the Next runtime. `docs/SPEC.md` path references updated to match.
+- **`.claude/` harness added.** Seven scoped rule files (`structure`, `data`,
+  `ai`, `outreach`, `ui`, `testing`, `git`), five role subagents (`pm`,
+  `architect`, `engineer`, `qa`, `reviewer`), three commands (`/slice`,
+  `/verify`, `/handoff`), and a committed permission allowlist.
+- **`CLAUDE.md` slimmed** from 7755 to 4647 bytes and turned into a router: the
+  ten rules stay always-loaded as one-liners, the detail behind each lives in the
+  rule file for its area and is read only when that area is touched.
+- **Role trailers on commits.** Every commit now carries `Role:` and, where a
+  role verified it, `Reviewed-by:`. Read back with
+  `git log --grep='^Role: engineer'`.
+
 ---
 
 ## Next up
@@ -172,13 +198,13 @@ UI → test), nothing started until the previous slice is green.
    invite flow. A brand-new user still lands on "Anda belum punya workspace" and
    can only be rescued by `pnpm db:seed`.
 2. **Module 1 — lead ingestion.** `POST /api/webhooks/n8n/leads`, HMAC
-   verification, `webhook_events` idempotency, `lib/leads/dedupe.ts` (unit
+   verification, `webhook_events` idempotency, `src/lib/leads/dedupe.ts` (unit
    tested: domain → phone → email → fuzzy name+city). Tables already exist.
-3. **Module 3 — qualification.** `lib/ai/agent.ts` + `ai_runs` first, then
-   `lib/scoring/rubric.ts`. The model returns per-factor sub-scores only; code
+3. **Module 3 — qualification.** `src/lib/ai/agent.ts` + `ai_runs` first, then
+   `src/lib/scoring/rubric.ts`. The model returns per-factor sub-scores only; code
    computes the weighted total. The seed already writes rows in that shape.
 4. **Module 5 + approvals** — content generation with `needs_input` gating.
-5. **`lib/outreach/send-guard.ts`** — before any provider adapter exists, so
+5. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
    there is never a code path that sends without it.
 
 ---
@@ -187,7 +213,9 @@ UI → test), nothing started until the previous slice is green.
 
 | Item | Needs |
 |---|---|
+| **Every `pnpm` script** | Node.js is not on this machine's PATH and `node_modules/` does not exist (2026-08-24). `node`, `npm` and `pnpm` all resolve to nothing; the machine PATH has no nodejs entry. Reinstall Node, then `pnpm install`. Until then no gate can run. |
 | `pnpm test:e2e` | `pnpm exec playwright install chromium` (~150 MB download). Deliberately not run. |
+| Git identity | `user.name` / `user.email` are unset in this repo and globally, though every earlier commit is authored by `pilemon31 <barimbingpilemon@gmail.com>`. The 2026-08-24 commits pass that identity inline with `git -c`; set it properly with `git config user.email …` to avoid repeating the flag. |
 
 **To run the stack from scratch:**
 
@@ -201,7 +229,7 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 
 ## Known issues
 
-1. **Drizzle bypasses RLS.** `lib/db/drizzle.ts` connects with `DATABASE_URL`, a
+1. **Drizzle bypasses RLS.** `src/lib/db/drizzle.ts` connects with `DATABASE_URL`, a
    privileged role. RLS protects the Supabase-client path only. Every Drizzle
    query must filter by `workspace_id` in application code — a missing filter is
    a security bug, not a style nit. Flagged in the file header comment, and
@@ -209,7 +237,7 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
    want `SET LOCAL role` per request.
 2. **No workspace creation path.** Covered as next-up item 1.
 3. **`listUsers({ perPage: 1000 })` does not paginate.** Two callers now:
-   `scripts/seed.ts` and `listMembersWithEmail()` in `lib/auth/members.ts`. Fine
+   `scripts/seed.ts` and `listMembersWithEmail()` in `src/lib/auth/members.ts`. Fine
    for a dev seed and a handful of members; fix with the invite flow.
 4. **Every screen is read-only.** No forms, server actions, or mutations exist
    anywhere in the product yet — including approve/reject on Persetujuan.
@@ -231,6 +259,10 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 | 9 | Schema split into `lib/db/schema/` by domain | One file was already 15 tables away from unreadable. `drizzle.config.ts` accepts a directory, so nothing else changed. CLAUDE.md §4 lists `schema.ts`; the directory supersedes it. |
 | 10 | The seed is deterministic and idempotent | UUIDv5 over a fixed namespace plus a seeded RNG means re-running it never duplicates rows and every test can assert exact counts. It also keeps screenshots stable across machines. |
 | 11 | Env files comment out unset optional vars instead of writing `""` | `.optional()` in Zod means "may be `undefined`", not "may be blank". dotenv turns `FOO=""` into `''`, which then fails `.min(1)` (or `z.url()`) and kills the boot that rule 1 deliberately makes fatal. Verified against the real `.env.local`: optional keys now parse to `undefined`. |
+| 12 | Application code lives in `src/` | The root held 16 config files interleaved with source. `src/` is a first-class Next.js convention, and every internal import already went through the `@/` alias, so the move cost six one-line config edits and one source file. CLAUDE.md §4 is superseded by `.claude/rules/structure.md`. |
+| 13 | The harness lives in `.claude/`, not a root `rules/` directory | `.claude/agents/` and `.claude/commands/` are read automatically by Claude Code; a root `rules/` directory would need a manual reference every time. The rule files are ordinary markdown either way. |
+| 14 | The stack table and definition of done stayed in `CLAUDE.md` | They are consulted on nearly every slice, so moving them into an on-demand file would trade a small constant saving for an extra read most turns. The directory tree and the old §6 compliance section moved out, since they are area-specific. |
+| 15 | Role attribution is a commit trailer, not a subject prefix | `Role: engineer` in the footer keeps the subject line conventional-commit clean while staying greppable via `git log --grep`. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
