@@ -2,9 +2,10 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-08-24
-**Phase:** 1 — Data layer + read-only CRM (schema, RLS, seed, all nine screens),
-followed by a structure and tooling pass (no product change)
+**Last updated:** 2026-08-26 (third pass: local stack running, every gate green)
+**Phase:** 1 complete — data layer + read-only CRM (schema, RLS, seed, all nine
+screens) plus a structure and tooling pass. Phase 2 (Module 1 — lead ingestion)
+is scoped and not started.
 
 ---
 
@@ -19,18 +20,25 @@ in the product can create, edit, approve, or send anything.
 
 | Gate | Status |
 |---|---|
-| `pnpm typecheck` | ✅ clean, re-run 2026-08-24 after the `src/` move |
-| `pnpm lint` | ✅ clean, 0 errors 0 warnings, re-run 2026-08-24 |
-| `pnpm test` | ✅ 17 tests, 2 files, re-run 2026-08-24 |
-| `pnpm build` | ⚠️ compiles clean in 8.8s, then fails collecting page data |
-| `pnpm test:integration` | ⛔ needs Docker, which is not installed on this machine |
-| `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers not installed |
+| `pnpm typecheck` | ✅ clean |
+| `pnpm lint` | ✅ clean, 0 errors 0 warnings |
+| `pnpm test` | ✅ 17 tests, 2 files, 231 ms |
+| `pnpm build` | ✅ **all 17 routes built** — previously blocked, now closed |
+| `pnpm test:integration` | ✅ **22 tests, 2 files, 2.10 s — first successful run in the project's history** |
+| `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
-The `src/` move is verified: `next build` resolves every alias, compiles all
-routes and passes its own type check. The build then stops at
-`/auth/callback` because `.env.local` does not exist on this machine, so
-`publicEnv` has nothing to parse. That is rule 1 behaving exactly as designed,
-not a regression — restore `.env.local` and the build completes.
+All six gates were run on 2026-08-26 against the live local stack. Five are green;
+the sixth is a deliberate deferral, not a failure.
+
+**The machine is unblocked.** Docker Desktop is installed and the Supabase stack
+runs locally: 10 containers, Postgres 17 healthy, migrations `0000`–`0003` applied,
+seed loaded. `.env.local` is complete. The two long-standing environment blockers
+are closed, and with them the last doubt about the `src/` move — `next build` now
+completes end to end, all 17 routes.
+
+The integration suite running for the first time matters more than the build. RLS
+isolation, the privileged-connection bypass, and every seed invariant are now
+**proven against real Postgres** rather than asserted in a document.
 
 ---
 
@@ -191,33 +199,149 @@ not a regression — restore `.env.local` and the build completes.
 
 ---
 
+## Prompt 3 — ingestion + dedupe: readiness assessment (2026-08-26)
+
+Asked: can we start "Prompt 3 — Ingestion + dedupe" (SPEC §2 and §3)?
+
+**Verdict: yes for the first slice, no for the prompt as one unit.** Nothing in
+the prompt is blocked by an unmade design decision, but the prompt bundles five
+deliverables across two SPEC modules, and two of them cannot be *verified* on
+this machine today. CLAUDE.md §4 allows one vertical slice at a time.
+
+### Already in place — no work needed
+
+- `companies`, `contacts`, `leads`, `campaigns`, `activities` and
+  `webhook_events` all exist, migrated and RLS-policied.
+- `webhook_events` carries a unique index on `(provider, idempotency_key)`, so the
+  replay test the prompt asks for ("post the same payload twice → second insert
+  is 0 rows") is enforceable in the database, not only in application code.
+- `companies.dedupe_key` exists, plus a **partial** unique index on
+  `(workspace_id, domain) where domain is not null`, so companies found by phone
+  alone do not collide on a null domain.
+- `contacts.phone` is already specified and seeded as E.164 with the scraped
+  `08xx` form kept in `raw` — the normalisation target dedupe must produce is
+  fixed, and already demonstrated by 60 seeded rows.
+- `N8N_WEBHOOK_SECRET` is hard-required (min 32 chars) and validated at boot, so
+  HMAC verification has its secret.
+- `Result<T, E>` and the typed-error convention exist (rule 9).
+
+### Not in place
+
+| Needed by | Missing |
+|---|---|
+| all of it | `src/lib/leads/` does not exist — no `dedupe.ts`, no ingestion module |
+| webhook | `src/app/api/webhooks/` does not exist; `/api/health` is the only route built |
+| dedupe strategy 4 | `pg_trgm` is not enabled in any migration; fuzzy name+city at trigram ≥ 0.85 needs it |
+| CSV upload | the product has **zero** mutations today — no server action, no form, no file upload anywhere (known issue 4). This slice writes the first one. |
+| enrichment | `pg-boss` is not installed; no worker, no `/api/cron/tick`, no job schema |
+| enrichment | `src/lib/ai/agent.ts` and `models.ts` do not exist. Rule 2 puts every LLM call behind `agent.ts`, so the "LLM company summary with confidence" step cannot be written until that groundwork lands. |
+| enrichment | `GOOGLE_GENERATIVE_AI_API_KEY` is unset (optional in `env.ts`) — the LLM step has no key to call with. |
+
+### Proposed split — three slices, in this order
+
+**3a. Webhook + dedupe** (SPEC §2, prompt items 1 and 2). Self-contained: no new
+runtime dependency, no LLM, no UI. `POST /api/webhooks/n8n/leads` with raw-body
+HMAC, Zod validation, `webhook_events` idempotency, a transactional batch insert,
+and `src/lib/leads/dedupe.ts` with the four strategies in SPEC order. Unit tests
+for Indonesian phone normalisation — `08xx` / `8xx` / `62xx` / `+62xx` / spaces /
+dashes / `(0)` / doubled country code / too short / non-numeric — at least the 25
+cases the prompt asks for, the hostile ones being the point. **This slice can
+start today.**
+
+**3b. CSV upload** (prompt item 3, XLSX dropped — decision 18). Depends on 3a's
+pipeline existing, and introduces both the product's first mutation path and a
+file-parser dependency.
+
+**3c. Enrichment worker** (SPEC §3, prompt items 4 and 5). pg-boss,
+`/api/cron/tick`, the `enrich_company` job, fetch + robots.txt + HTML-to-text
+extraction, and the LLM summary. **3a and the `agent.ts` groundwork come first** —
+rule 2 makes `agent.ts` a prerequisite, not an optional refactor.
+
+### Owner decisions — taken 2026-08-26
+
+| Dependency | For | Decision |
+|---|---|---|
+| `pg-boss` | 3c | **Approved.** It creates its own schema in the same Postgres. |
+| CSV parser | 3b | **Approved — CSV only. XLSX is dropped from the MVP.** See decision 18. |
+| an HTML-to-text step | 3c | **Approved.** SPEC §3 requires stripping HTML before the regex. |
+| `ai` + `@ai-sdk/google` + `@ai-sdk/openai` | 3c | **Approved.** Installed alongside `agent.ts`. |
+
+None of these is installed yet. Each goes in with the slice that uses it, so a
+dependency never sits in `package.json` ahead of the code that needs it and the
+gate always covers what is actually there.
+
+Fuzzy matching needs **no** dependency: `pg_trgm` ships with Postgres and is
+turned on in a migration.
+
+### Where n8n stops
+
+Confirmed against SPEC §2: **n8n scrapes, and nothing else.** It finds businesses
+and POSTs them to one signed webhook. Dedupe, enrichment, scoring, drafting,
+approval, sending, reply classification, status transitions and the dashboard all
+run in this platform. n8n has no database access and no second integration point —
+it appears in SPEC exactly three times, all of them about that one webhook.
+
+### The prompt's own acceptance test is now provable — resolved 2026-08-26
+
+"Post the same payload twice → second insert is 0 rows" needed real Postgres.
+It has one now. `pnpm test:integration` runs and passes 22 tests, so the replay
+proof for slice 3a will be **written and actually executed**, not written and
+deferred. This was the single largest risk to Phase 2 and it is gone.
+
+One note for slice 3b: `storage` and `realtime` are deliberately `enabled = false`
+in `supabase/config.toml` to keep the local stack light. CSV upload should parse
+the file in memory and never persist it, which keeps that decision intact. If we
+ever need to keep the original file, flipping `storage` back on is a config change
+plus a local restart, not a redesign.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
 UI → test), nothing started until the previous slice is green.
 
-1. **Workspace provisioning** — create a workspace on first sign-in, or an
-   invite flow. A brand-new user still lands on "Anda belum punya workspace" and
-   can only be rescued by `pnpm db:seed`.
-2. **Module 1 — lead ingestion.** `POST /api/webhooks/n8n/leads`, HMAC
-   verification, `webhook_events` idempotency, `src/lib/leads/dedupe.ts` (unit
-   tested: domain → phone → email → fuzzy name+city). Tables already exist.
-3. **Module 3 — qualification.** `src/lib/ai/agent.ts` + `ai_runs` first, then
-   `src/lib/scoring/rubric.ts`. The model returns per-factor sub-scores only; code
-   computes the weighted total. The seed already writes rows in that shape.
-4. **Module 5 + approvals** — content generation with `needs_input` gating.
-5. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
+1. ~~**Unblock the machine**~~ — **done 2026-08-26.** Stack runs, every gate green.
+2. **Slice 3a — webhook + dedupe.** ← *next* `POST /api/webhooks/n8n/leads`, HMAC over the
+   raw body, `webhook_events` idempotency, `src/lib/leads/dedupe.ts` (domain →
+   phone → email → fuzzy name+city). Tables already exist.
+3. **Workspace provisioning** — create a workspace on first sign-in, or an invite
+   flow. A brand-new user still lands on "Anda belum punya workspace" and can only
+   be rescued by `pnpm db:seed`. Not a blocker for 3a, which resolves its
+   workspace from `campaign_id`.
+4. **Slice 3b — CSV upload** into the same pipeline. Parser approved; XLSX dropped.
+5. **`src/lib/ai/agent.ts` + `models.ts`** — the single LLM entry point and its
+   `ai_runs` row. Prerequisite for both enrichment and qualification.
+6. **Slice 3c — enrichment worker.** pg-boss, `/api/cron/tick`, `enrich_company`,
+   plus documentation for running the worker locally.
+7. **Module 3 — qualification.** `src/lib/scoring/rubric.ts`; the model returns
+   per-factor sub-scores only and code computes the weighted total. The seed
+   already writes rows in that shape.
+8. **Module 5 + approvals** — content generation with `needs_input` gating.
+9. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
    there is never a code path that sends without it.
-
----
 
 ## Blocked
 
 | Item | Needs |
 |---|---|
-| **`.env.local`** | The file does not exist on this machine — it is gitignored, so it was never in the repo. Without it `pnpm build` and `pnpm dev` die at boot by design (rule 1). Recreate it from `.env.example` with the values `pnpm db:start` prints. |
-| `pnpm test:integration` | Docker is not installed on this machine, so the local Supabase stack (`pnpm db:start`) cannot run. Install Docker Desktop, then `pnpm db:start && pnpm db:reset`. |
-| `pnpm test:e2e` | `pnpm exec playwright install chromium` (~150 MB download). Deliberately not run. Also needs `.env.local` and a dev server. |
+| `pnpm test:e2e` | `pnpm exec playwright install chromium` (~150 MB download). Deliberately not run — it is the only gate still deferred. |
+
+**Closed on 2026-08-26:**
+
+- ~~`.env.local` missing~~ — written, complete, all six required variables present.
+  Both Supabase keys came from `supabase status`; they are local demo keys valid
+  only against 127.0.0.1, identical on any machine running this stack.
+- ~~Docker not installed~~ — Docker Desktop 29.7.2, per-user install under
+  `%LOCALAPPDATA%\Programs\DockerDesktop`. The failure mode worth remembering:
+  `wsl --install` enables Virtual Machine Platform but the feature is inert until
+  a reboot, and the installer's PATH change does not reach shells that were already
+  open. Both symptoms look like a broken install and are neither.
+- ~~Integration suite never run~~ — 22 tests passing.
+
+`supabase_vector` sits in a restart loop locally. It is the log shipper for the
+analytics container, nothing in the app or the tests depends on it, and the other
+nine containers are healthy. Noted so nobody spends an afternoon on it.
 
 **To run the stack from scratch:**
 
@@ -265,6 +389,11 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 | 13 | The harness lives in `.claude/`, not a root `rules/` directory | `.claude/agents/` and `.claude/commands/` are read automatically by Claude Code; a root `rules/` directory would need a manual reference every time. The rule files are ordinary markdown either way. |
 | 14 | The stack table and definition of done stayed in `CLAUDE.md` | They are consulted on nearly every slice, so moving them into an on-demand file would trade a small constant saving for an extra read most turns. The directory tree and the old §6 compliance section moved out, since they are area-specific. |
 | 15 | Role attribution is a commit trailer, not a subject prefix | `Role: engineer` in the footer keeps the subject line conventional-commit clean while staying greppable via `git log --grep`. |
+| 16 | "Prompt 3" ships as three slices (3a webhook + dedupe, 3b upload, 3c enrichment), not one | It bundles SPEC §2 and §3: five deliverables, the product's first mutation and its first background worker. CLAUDE.md §4 is one vertical slice at a time. 3a is the only part with no new dependency and no external service, so it goes first and the gate stays meaningful. |
+| 17 | Fuzzy dedupe uses `pg_trgm` in Postgres, not a JS similarity library | SPEC §2 specifies trigram ≥ 0.85, which is `similarity()` verbatim. The extension ships with Postgres, needs no approval, and keeps the comparison in the same query as the workspace filter instead of pulling candidate rows into Node. |
+| 18 | CSV only for bulk upload; XLSX is out of the MVP | Owner decision, 2026-08-26. An XLSX reader is a large dependency with a poor CVE history, for a format a salesperson can export as CSV in two clicks. Revisit only if a real user is blocked by it. |
+| 19 | `pg-boss`, an HTML-to-text library and the Vercel AI SDK are approved | Owner decision, 2026-08-26. All three were already implied by the CLAUDE.md §1 stack table; this makes it explicit. Each is installed by the slice that uses it, not up front. |
+| 20 | `.env.local` ships the two unknown Supabase keys commented out, not as placeholder strings | Both are validated as `z.string().min(1)`, so a placeholder would pass the boot check and then fail at the first auth call with an opaque "Invalid API key". Commented out, rule 1 fires at boot and names the exact variable. Consistent with decision 11. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
