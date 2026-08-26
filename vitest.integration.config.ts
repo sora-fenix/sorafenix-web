@@ -19,6 +19,11 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // See tests/integration/server-only.stub.ts — without this, every module
+      // that guards itself with `server-only` is unimportable under plain Node.
+      'server-only': fileURLToPath(
+        new URL('./tests/integration/server-only.stub.ts', import.meta.url),
+      ),
     },
   },
 })

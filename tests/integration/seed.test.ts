@@ -21,7 +21,7 @@ const EXPECTED_COUNTS: Record<string, number> = {
   products: 1,
   knowledge_docs: 3,
   integrations: 2,
-  campaigns: 2,
+  campaigns: 3,
   companies: 60,
   contacts: 60,
   leads: 60,

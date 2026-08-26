@@ -59,6 +59,7 @@ import {
   type FitLevel,
 } from './seed-data'
 import * as schema from '../src/lib/db/schema'
+import { normalizeCompanyName } from '../src/lib/leads/normalize'
 
 config({ path: '.env.local', quiet: true })
 
@@ -408,6 +409,9 @@ function buildCompanies(
         id: id.company(i),
         workspaceId: id.workspace,
         name,
+        // Written with the same function ingestion uses, so a seeded company and
+        // an imported one are comparable by dedupe strategy 4.
+        nameNormalized: normalizeCompanyName(name),
         domain,
         website: `https://${domain}`,
         industry,
@@ -425,7 +429,9 @@ function buildCompanies(
           address: `${pick(rng, STREETS)} No. ${intBetween(rng, 1, 180)}, ${city.name}`,
           category: industry,
         },
-        dedupeKey: domain,
+        // Same prefixed shape lib/leads/dedupe.ts writes, so the column means one
+        // thing regardless of whether the row came from the seed or from n8n.
+        dedupeKey: `domain:${domain}`,
         createdAt,
         updatedAt: lastActivity,
       },
@@ -802,10 +808,32 @@ async function main(): Promise<void> {
         createdBy: owner?.id ?? null,
         createdAt: daysAgo(9),
       },
+      {
+        // Deliberately empty. This is the campaign the n8n lead hunter posts
+        // into, so it must start with zero leads for an import to be visible as
+        // an import rather than as noise on top of existing rows.
+        id: id.campaign('pet-shop-surabaya'),
+        workspaceId: id.workspace,
+        name: 'Pet Shop Surabaya',
+        productId: id.product,
+        target: {
+          industries: ['Ritel Hewan Peliharaan'],
+          cities: ['Surabaya'],
+          size_bands: ['1-10', '11-50'],
+        },
+        status: 'draft',
+        dailyCap: 20,
+        createdBy: owner?.id ?? null,
+        createdAt: daysAgo(1),
+      },
     ]
     await db.insert(schema.campaigns).values(campaigns)
 
-    const campaignIds = campaigns.flatMap((c) => (c.id === undefined ? [] : [c.id]))
+    // Seeded leads are spread across the two established campaigns only — the
+    // Pet Shop campaign stays empty on purpose (see above).
+    const campaignIds = campaigns
+      .slice(0, 2)
+      .flatMap((c) => (c.id === undefined ? [] : [c.id]))
     const built = buildCompanies(rng, users, campaignIds)
 
     await db.insert(schema.companies).values(built.map((b) => b.company))

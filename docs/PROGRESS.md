@@ -2,10 +2,9 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-08-26 (third pass: local stack running, every gate green)
-**Phase:** 1 complete — data layer + read-only CRM (schema, RLS, seed, all nine
-screens) plus a structure and tooling pass. Phase 2 (Module 1 — lead ingestion)
-is scoped and not started.
+**Last updated:** 2026-08-26 (fourth pass: slice 3a shipped)
+**Phase:** 2 in progress — Module 1, lead ingestion. Slice 3a (webhook + dedupe)
+is done and green; 3b (CSV upload) and 3c (enrichment worker) are next.
 
 ---
 
@@ -22,9 +21,9 @@ in the product can create, edit, approve, or send anything.
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 17 tests, 2 files, 231 ms |
+| `pnpm test` | ✅ 99 tests, 3 files |
 | `pnpm build` | ✅ **all 17 routes built** — previously blocked, now closed |
-| `pnpm test:integration` | ✅ **22 tests, 2 files, 2.10 s — first successful run in the project's history** |
+| `pnpm test:integration` | ✅ **46 tests, 3 files** — 24 of them new in slice 3a |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
 All six gates were run on 2026-08-26 against the live local stack. Five are green;
@@ -199,6 +198,94 @@ isolation, the privileged-connection bypass, and every seed invariant are now
 
 ---
 
+## Slice 3a — webhook + dedupe (done 2026-08-26)
+
+SPEC §2 in full: signed ingestion, idempotency, four-strategy dedupe. No new
+runtime dependency was added.
+
+### What shipped
+
+| File | Role |
+|---|---|
+| `src/lib/leads/normalize.ts` | canonical domain / email / phone / company name. Pure, total, never throws. |
+| `src/lib/leads/dedupe.ts` | the four strategies in SPEC order, over an injected lookup so the ordering is testable without a database. |
+| `src/lib/leads/ingest.ts` | transactional batch, merge-on-duplicate, audit rows. |
+| `src/app/api/webhooks/n8n/leads/route.ts` | raw-body HMAC → Zod → idempotency claim → ingest. |
+| `drizzle/0004_freezing_bloodscream.sql` | `companies.name_normalized`. |
+| `drizzle/0005_pg_trgm.sql` | pg_trgm, a search_path-pinned similarity wrapper, trigram index. |
+| `tests/unit/dedupe.test.ts` | 82 cases — 39 of them phone forms. |
+| `tests/integration/ingest.test.ts` | 24 cases through the real route handler. |
+| `docs/n8n-integration.md` | the n8n side of the contract, with the Code node to paste. |
+
+### The acceptance criterion, proved twice
+
+SPEC §10: *"Given the same n8n payload posted twice, the second inserts 0 rows and
+returns `duplicates` equal to the item count."* Covered by
+`tests/integration/ingest.test.ts`, and separately over real HTTP against
+`pnpm dev` with a five-item payload:
+
+```
+forged signature  → 401 {"error":"invalid_signature"}
+first delivery    → {"accepted":5,"inserted":3,"duplicates":1,
+                     "rejected":[{"index":3,"reason":"no_contact_channel"}],"replayed":false}
+same payload again→ {"accepted":5,"inserted":0,"duplicates":4,
+                     "rejected":[{"index":3,"reason":"no_contact_channel"}],"replayed":true}
+```
+
+The single duplicate in the first delivery is the same shop written twice in one
+payload — `https://WWW.PetShopBahagia.co.id/kontak?utm_source=maps` and
+`http://petshopbahagia.co.id`, phones `0812-3456-7890` and `+62 812 3456 7890`.
+It resolved against a row the same transaction had just written.
+
+### Things the n8n workflow taught us that SPEC did not
+
+The owner supplied the real lead-hunter export before the schema was written,
+which changed three decisions:
+
+1. **Field names did not match at all.** The workflow emits Google Sheets column
+   headers (`Nama Bisnis`, `No. Telepon`); SPEC specifies `company_name`, `phone`.
+   Written from SPEC alone, every item would have been rejected on the first run.
+   Resolved on the n8n side — see decision 21.
+2. **Landlines must normalise.** SPEC §2 lists only mobile forms (`08xx`, `62xx`,
+   `+62xx`), but Google Maps returns office numbers constantly and the workflow
+   passes them through. `normalizePhone` therefore accepts the whole national
+   plan, not just `8xx`. `(031) 876-5432` → `+62318765432`.
+3. **A scraper sentinel can merge every company at once.** The workflow routes
+   website-less businesses to `https://no-website.invalid`. Had that ever reached
+   `normalizeDomain`, every website-less company in a batch would have collapsed
+   into one row on the domain strategy. RFC 2606 / 6761 reserved names are now
+   rejected outright, with a test pinning it.
+
+### Measured, not assumed
+
+SPEC's 0.85 trigram threshold is strict. Against this database:
+
+| Pair | Similarity | Merges? |
+|---|---|---|
+| `bahagia petcare` vs `petcare bahagia` | 1.00 | yes — trigrams ignore word order |
+| `pet shop surabaya` vs `pet shops surabaya` | 0.84 | **no** |
+| `…sejahtera` vs `…sejahtra` (one-letter typo) | 0.82 | **no** |
+| `bahagia petcare` vs `bahagia petcare surabaya` | 0.64 | no |
+
+So typos are not caught. That is the safe direction — merging two companies that
+are genuinely different is not something the product can undo — but it is a
+product call the owner may want to revisit once there is real import volume.
+
+### Open questions left for the owner
+
+1. **A duplicate company in a *different* campaign creates no lead.** SPEC says
+   "on duplicate: don't insert". Taken literally, a company found for campaign A
+   and later targeted by campaign B gets no lead for B. That may be wrong, but
+   guessing was worse than asking.
+2. **One webhook secret for all workspaces.** `N8N_WEBHOOK_SECRET` is global. Fine
+   at one workspace; before the second, the secret belongs per-workspace in
+   `integrations`.
+3. **No per-IP rate limit on the webhook.** The signature is the gate, and item
+   count is capped at 1000. A real limiter needs a store and should arrive with
+   the first public route that has no signature.
+
+---
+
 ## Prompt 3 — ingestion + dedupe: readiness assessment (2026-08-26)
 
 Asked: can we start "Prompt 3 — Ingestion + dedupe" (SPEC §2 and §3)?
@@ -302,14 +389,14 @@ Recommended order. One vertical slice at a time (schema → server logic → API
 UI → test), nothing started until the previous slice is green.
 
 1. ~~**Unblock the machine**~~ — **done 2026-08-26.** Stack runs, every gate green.
-2. **Slice 3a — webhook + dedupe.** ← *next* `POST /api/webhooks/n8n/leads`, HMAC over the
+2. ~~**Slice 3a — webhook + dedupe**~~ — **done 2026-08-26.** `POST /api/webhooks/n8n/leads`, HMAC over the
    raw body, `webhook_events` idempotency, `src/lib/leads/dedupe.ts` (domain →
    phone → email → fuzzy name+city). Tables already exist.
 3. **Workspace provisioning** — create a workspace on first sign-in, or an invite
    flow. A brand-new user still lands on "Anda belum punya workspace" and can only
    be rescued by `pnpm db:seed`. Not a blocker for 3a, which resolves its
    workspace from `campaign_id`.
-4. **Slice 3b — CSV upload** into the same pipeline. Parser approved; XLSX dropped.
+4. **Slice 3b — CSV upload** into the same pipeline. ← *next.* Parser approved; XLSX dropped.
 5. **`src/lib/ai/agent.ts` + `models.ts`** — the single LLM entry point and its
    `ai_runs` row. Prerequisite for both enrichment and qualification.
 6. **Slice 3c — enrichment worker.** pg-boss, `/api/cron/tick`, `enrich_company`,
@@ -366,7 +453,17 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
    `scripts/seed.ts` and `listMembersWithEmail()` in `src/lib/auth/members.ts`. Fine
    for a dev seed and a handful of members; fix with the invite flow.
 4. **Every screen is read-only.** No forms, server actions, or mutations exist
-   anywhere in the product yet — including approve/reject on Persetujuan.
+   anywhere in the product yet — including approve/reject on Persetujuan. The
+   webhook writes, but nothing in the UI does.
+5. **Imported leads are invisible until a screen shows them.** Ingestion writes
+   companies, contacts and leads that the existing Leads screen renders, but there
+   is no import history view and no way to see a rejection after the fact — the
+   `rejected[]` array only exists in the HTTP response. `webhook_events` stores the
+   payload, so nothing is lost; it is just not surfaced.
+6. **`normalizePhone` peels a repeated `62` prefix.** Right for a doubled country
+   code, which occurs in scraped data; wrong for a hypothetical landline whose
+   area code is literally `62`, which is not in Indonesia's numbering plan.
+   Documented in the function.
 
 ---
 
@@ -394,6 +491,11 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 | 18 | CSV only for bulk upload; XLSX is out of the MVP | Owner decision, 2026-08-26. An XLSX reader is a large dependency with a poor CVE history, for a format a salesperson can export as CSV in two clicks. Revisit only if a real user is blocked by it. |
 | 19 | `pg-boss`, an HTML-to-text library and the Vercel AI SDK are approved | Owner decision, 2026-08-26. All three were already implied by the CLAUDE.md §1 stack table; this makes it explicit. Each is installed by the slice that uses it, not up front. |
 | 20 | `.env.local` ships the two unknown Supabase keys commented out, not as placeholder strings | Both are validated as `z.string().min(1)`, so a placeholder would pass the boot check and then fail at the first auth call with an opaque "Invalid API key". Commented out, rule 1 fires at boot and names the exact variable. Consistent with decision 11. |
+| 21 | The n8n workflow maps to the API contract, not the other way round | Its keys (`Nama Bisnis`, `No. Telepon`) are Google Sheets column headers — a presentation format. Baking them into the webhook would force CSV upload and every future source to speak them too. One canonical shape, many sources; `docs/n8n-integration.md` carries the Code node so the change costs one paste. |
+| 22 | Merge on duplicate fills blanks only, never overwrites | The stored value may be a correction a human made by hand. A scraper re-running tomorrow must not silently undo it. |
+| 23 | `companies.name_normalized` is a stored column, not a SQL expression | Fuzzy matching must compare the same shape the application produces. Recomputing the legal-form stripping in SQL would be a second definition of "the same name", and the two would drift. Stored, it also gives the trigram index something to index. |
+| 24 | Dedupe lookups are injected, not imported | It makes the strategy ordering — the part with real consequences if it changes — unit-testable with no database, which is what `.claude/rules/testing.md` demands of this file. |
+| 25 | The integration suite aliases `server-only` to a stub | The guard is a build-time boundary that stops client bundles pulling in server code; this suite produces no bundle. Aliasing it lets the acceptance test drive the real route handler instead of a copy of its logic. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

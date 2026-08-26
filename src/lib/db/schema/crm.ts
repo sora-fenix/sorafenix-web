@@ -104,6 +104,15 @@ export const companies = pgTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
+    /**
+     * `name` with the legal form, punctuation and spacing stripped — the form
+     * dedupe strategy 4 compares (lib/leads/normalize.ts `normalizeCompanyName`).
+     *
+     * Stored rather than computed in SQL so there is exactly one definition of
+     * "the same name", and so the trigram index has something to index. Every
+     * writer of `name` must write this too.
+     */
+    nameNormalized: text('name_normalized'),
     /** Normalised: no protocol, no www., no path, lowercased. */
     domain: text('domain'),
     website: text('website'),
