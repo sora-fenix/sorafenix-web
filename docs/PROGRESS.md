@@ -2,7 +2,7 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-08-26 (fourth pass: slice 3a shipped)
+**Last updated:** 2026-08-28 (fifth pass: n8n wiring)
 **Phase:** 2 in progress — Module 1, lead ingestion. Slice 3a (webhook + dedupe)
 is done and green; 3b (CSV upload) and 3c (enrichment worker) are next.
 
@@ -286,6 +286,54 @@ product call the owner may want to revisit once there is real import volume.
 
 ---
 
+## n8n wiring (2026-08-28)
+
+Slice 3a built and proved the SORA side. This session connected the outside world
+to it. No application code changed — the work was a tunnel, a documentation fix,
+and an end-to-end proof over the public internet.
+
+### What was actually proved
+
+`cloudflared` quick tunnel in front of `pnpm dev`, then a signed three-item payload
+posted **from outside the machine** at `https://…trycloudflare.com`:
+
+```
+first delivery  → {"accepted":3,"inserted":2,"duplicates":1,"rejected":[],"replayed":false}
+same key again  → {"accepted":3,"inserted":0,"duplicates":3,"rejected":[],"replayed":true}
+```
+
+The rows that landed confirm normalisation end to end, not just in unit tests:
+
+| Sent | Stored |
+|---|---|
+| `https://WWW.CakrawalaPet.co.id/kontak?utm_source=maps` | domain `cakrawalapet.co.id` |
+| `Halo@CakrawalaPet.co.id` | `halo@cakrawalapet.co.id` |
+| `0812-3456-1122` and `+62 812 3456 1122` | one company, `+6281234561122` |
+| `(031) 876-5432` behind `https://no-website.invalid` | company kept, phone `+62318765432`, no domain |
+
+The sentinel behaved as designed: it produced no domain, so the landline was the
+only thing holding that company's identity, and it was enough.
+
+### The documentation was wrong for n8n Cloud
+
+`docs/n8n-integration.md` told the reader to put the secret in `$env`. On n8n Cloud
+that fails with `access to env vars denied` — `N8N_BLOCK_ENV_ACCESS_IN_NODE`
+defaults to `true` and is a self-hosted setting with no Cloud equivalent. Anyone
+following the document on Cloud would have hit it on the first run. Replaced with a
+`SORA Config` Set node, which works on every deployment. See decision 26.
+
+`require('crypto')` was checked at the same time and is **fine** — crypto is
+whitelisted in the Code node on n8n Cloud, so that half of the document stood.
+
+### Still to be done by hand, in the n8n UI
+
+The three nodes are specified and the payload contract is proved, but the workflow
+itself has not been edited. Remaining: add the `SORA Config` Set node, replace
+`Append to Sheet` with the Code + HTTP pair, and add `maps_cid` to what
+`Extract Contacts` pushes so `source_url` has a value.
+
+---
+
 ## Prompt 3 — ingestion + dedupe: readiness assessment (2026-08-26)
 
 Asked: can we start "Prompt 3 — Ingestion + dedupe" (SPEC §2 and §3)?
@@ -464,6 +512,16 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
    code, which occurs in scraped data; wrong for a hypothetical landline whose
    area code is literally `62`, which is not in Indonesia's numbering plan.
    Documented in the function.
+7. **Real imports and the seed share one workspace, and the seed test asserts
+   exact counts.** `tests/integration/seed.test.ts` pins `companies: 60`,
+   `leads: 60`, `webhook_events: 3` scoped to `maju-bersama`. The seed is
+   idempotent but does not delete rows it did not write, so every ingested lead
+   pushes those counts up and `pnpm test:integration` fails until `pnpm db:reset`
+   — which in turn throws the imported leads away. Measured after the 2026-08-28
+   wiring proof: 62 / 62 / 4. The assertions are right; the arrangement is wrong.
+   The real fix is a separate workspace for real imports, which arrives with
+   workspace provisioning (next-up item 3). Until then, `db:reset` before running
+   the integration suite and accept that imports are disposable.
 
 ---
 
@@ -496,6 +554,8 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 | 23 | `companies.name_normalized` is a stored column, not a SQL expression | Fuzzy matching must compare the same shape the application produces. Recomputing the legal-form stripping in SQL would be a second definition of "the same name", and the two would drift. Stored, it also gives the trigram index something to index. |
 | 24 | Dedupe lookups are injected, not imported | It makes the strategy ordering — the part with real consequences if it changes — unit-testable with no database, which is what `.claude/rules/testing.md` demands of this file. |
 | 25 | The integration suite aliases `server-only` to a stub | The guard is a build-time boundary that stops client bundles pulling in server code; this suite produces no bundle. Aliasing it lets the acceptance test drive the real route handler instead of a copy of its logic. |
+| 26 | The n8n secret lives in a `SORA Config` Set node, not `$env` | n8n Cloud blocks `$env` in Code nodes (`N8N_BLOCK_ENV_ACCESS_IN_NODE` defaults true, no Cloud override), so the documented approach could not work on the deployment we actually use. A Set node works on Cloud and self-hosted alike. `$vars` is better where the plan has it, and the Code node reads config from one place so switching is a one-line change. |
+| 27 | The unanswered "duplicate company in a different campaign" question stays unanswered, and the current behaviour stands | Asked 2026-08-26, not answered by 2026-08-28. Per CLAUDE.md §4 the simplest option wins: SPEC's literal "on duplicate: don't insert" remains implemented, so a company found for campaign A gets no lead when campaign B targets it. Revisit before running a second campaign over the same city. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

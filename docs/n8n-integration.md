@@ -10,10 +10,10 @@ file is the n8n side of that contract.
 
 ## What changes in the workflow
 
-Replace the **Append to Sheet** node with two nodes:
+Replace the **Append to Sheet** node with three nodes:
 
 ```
-Extract Contacts → Build SORA Payload (Code) → Send to SORA (HTTP Request)
+Extract Contacts → SORA Config (Set) → Build SORA Payload (Code) → Send to SORA (HTTP Request)
 ```
 
 Keep Google Sheets too if it is useful as a log — append and POST are independent.
@@ -31,7 +31,33 @@ string verbatim as a raw body.
 
 ---
 
-## Node 1 — `Build SORA Payload`
+## Node 1 — `SORA Config`
+
+Type: Set · Mode: Manual Mapping · **Include Other Input Fields: on**
+
+Two string fields:
+
+| Name | Value |
+|---|---|
+| `webhook_secret` | the value of `N8N_WEBHOOK_SECRET` from SORA's `.env.local` |
+| `campaign_id` | the UUID of the campaign these leads belong to |
+
+**Do not use `$env` here.** On n8n Cloud, `N8N_BLOCK_ENV_ACCESS_IN_NODE` defaults
+to `true` and there is no way to turn it off — a Code node reading
+`$env.SORA_WEBHOOK_SECRET` fails with `access to env vars denied`. Self-hosted can
+set that variable to `false`, but a Set node works on every deployment, so this is
+the one path documented here.
+
+On a plan that has n8n Variables, `$vars.SORA_WEBHOOK_SECRET` is a better home for
+the secret than a field on the canvas. The Code node below reads the Set node, so
+swapping in `$vars` is a one-line change.
+
+`Include Other Input Fields` must be **on**, or the Set node replaces each business
+with the two config fields and the payload comes out empty.
+
+---
+
+## Node 2 — `Build SORA Payload`
 
 Type: Code · **Mode: Run Once for All Items**
 
@@ -47,14 +73,16 @@ per business.
 // canonical shape so that n8n, CSV upload and anything added later all land in
 // the same pipeline.
 
+// `crypto` is whitelisted in the Code node on n8n Cloud, so this needs no
+// NODE_FUNCTION_ALLOW_BUILTIN. Self-hosted does need it in the task runner env.
 const crypto = require('crypto');
 
-// Set these two in a Set node upstream, or via n8n environment variables.
-const SECRET = $env.SORA_WEBHOOK_SECRET;
-const CAMPAIGN_ID = $env.SORA_CAMPAIGN_ID;
+const config = $('SORA Config').first().json;
+const SECRET = config.webhook_secret;
+const CAMPAIGN_ID = config.campaign_id;
 
-if (!SECRET) throw new Error('SORA_WEBHOOK_SECRET is not set');
-if (!CAMPAIGN_ID) throw new Error('SORA_CAMPAIGN_ID is not set');
+if (!SECRET) throw new Error('SORA Config: webhook_secret is empty');
+if (!CAMPAIGN_ID) throw new Error('SORA Config: campaign_id is empty');
 
 function clean(value) {
   const s = String(value ?? '').trim();
@@ -124,7 +152,7 @@ results.push({
 
 ---
 
-## Node 2 — `Send to SORA`
+## Node 3 — `Send to SORA`
 
 Type: HTTP Request
 
@@ -152,6 +180,14 @@ cloudflared tunnel --url http://localhost:3000
 ```
 
 Use the printed hostname as the URL. The endpoint behaves identically either way.
+
+Two properties of a quick tunnel worth knowing before you paste the hostname into
+n8n: it is **anonymous and public** — anyone with the URL reaches your dev server,
+and the webhook signature is the only thing standing in front of it — and the
+hostname **changes every restart**, so the URL in the HTTP node has to be updated
+each time you restart `cloudflared`. Both are fine for an afternoon of wiring and
+neither is acceptable as a permanent arrangement; a named tunnel or a deployed
+host is the answer once this stops being a one-off.
 
 ---
 
