@@ -39,6 +39,7 @@ src/
     db/        drizzle.ts browser.ts server.ts admin.ts middleware.ts
                schema/ queries/
     auth/      session.ts permissions.ts members.ts
+    workspace/ slug.ts provision.ts
     ai/        agent.ts models.ts prompts/ schemas/
     leads/     dedupe.ts enrich.ts
     scoring/   rubric.ts score.ts

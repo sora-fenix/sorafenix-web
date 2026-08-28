@@ -2,9 +2,10 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-08-28 (fifth pass: n8n wiring)
+**Last updated:** 2026-08-28 (sixth pass: workspace provisioning)
 **Phase:** 2 in progress — Module 1, lead ingestion. Slice 3a (webhook + dedupe)
-is done and green; 3b (CSV upload) and 3c (enrichment worker) are next.
+and workspace provisioning are done and green; 3b (CSV upload) and 3c (enrichment
+worker) are next.
 
 ---
 
@@ -21,13 +22,13 @@ in the product can create, edit, approve, or send anything.
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 99 tests, 3 files |
-| `pnpm build` | ✅ **all 17 routes built** — previously blocked, now closed |
-| `pnpm test:integration` | ✅ **46 tests, 3 files** — 24 of them new in slice 3a |
+| `pnpm test` | ✅ 129 tests, 4 files |
+| `pnpm build` | ✅ all 18 routes built |
+| `pnpm test:integration` | ✅ 52 tests, 4 files |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
-All six gates were run on 2026-08-26 against the live local stack. Five are green;
-the sixth is a deliberate deferral, not a failure.
+All six gates were re-run on 2026-08-28 against the live local stack. Five are
+green; the sixth is a deliberate deferral, not a failure.
 
 **The machine is unblocked.** Docker Desktop is installed and the Supabase stack
 runs locally: 10 containers, Postgres 17 healthy, migrations `0000`–`0003` applied,
@@ -286,6 +287,64 @@ product call the owner may want to revisit once there is real import volume.
 
 ---
 
+## Workspace provisioning (done 2026-08-28)
+
+Closes known issue 2. A user who signs in with no membership can now create a
+workspace instead of reading an instruction to run `pnpm db:seed`.
+
+More importantly, this is the **product's first mutation**. The shape it
+establishes — client form → `'use server'` action → `lib/` module returning a
+`Result` → one Drizzle transaction — is what CSV upload (3b) and approvals
+(Module 5) will copy, so the pattern mattered more than the feature.
+
+### What shipped
+
+| File | Role |
+|---|---|
+| `src/lib/workspace/slug.ts` | name → URL slug. Pure, total, reserved-word aware. |
+| `src/lib/workspace/provision.ts` | workspace + owner membership in one transaction. |
+| `src/app/app/actions.ts` | `'use server'`, Zod at the boundary, Indonesian error copy. |
+| `src/app/app/create-workspace-form.tsx` | `useActionState`, mirrors `login-form.tsx`. |
+| `src/app/app/page.tsx` | the dead-end empty state became the form. |
+| `tests/unit/workspace-slug.test.ts` | 30 cases. |
+| `tests/integration/provision.test.ts` | 6 cases against real Postgres. |
+
+No schema change and no migration: `workspaces`, `memberships` and
+`workspaces_slug_key` already existed.
+
+### Why this write has to be server-side
+
+Not a shortcut — a constraint the schema already encodes. `drizzle/0001_rls.sql`
+gives `workspaces` no INSERT policy at all, and `memberships_insert_admin`
+requires the caller to already hold owner or manager **in the workspace being
+written to**. The creator's own first membership row is therefore unreachable
+through the RLS path by construction. The migration comment predicted this;
+implementation confirmed it.
+
+### The rollback case is the one worth having
+
+A workspace whose owner membership failed to write can never be reached by
+anyone again — no membership means no `listWorkspacesForUser` row, and the
+`/app` index would just offer to create another one. Both inserts share a
+transaction, and `provision.test.ts` proves it by provisioning for a user id that
+satisfies the uuid type but not the FK to `auth.users`: the membership insert
+fails and **no workspace row survives**.
+
+### Slug collisions are decided by the index, not by a select
+
+`provisionWorkspace` inserts with `onConflictDoNothing` and steps to the next
+suffix, rather than checking availability first. Between a check and a write a
+concurrent signup can take the slug; `workspaces_slug_key` is the only thing that
+actually decides, so it decides. Three workspaces named the same thing get
+`…-workspace`, `…-workspace-2`, `…-workspace-3`.
+
+### Deliberately not in scope
+
+No "create a second workspace" entry in the switcher, and no campaign creation.
+Owner decision — see decision 30 for why the campaign half matters.
+
+---
+
 ## n8n wiring (2026-08-28)
 
 Slice 3a built and proved the SORA side. This session connected the outside world
@@ -440,10 +499,8 @@ UI → test), nothing started until the previous slice is green.
 2. ~~**Slice 3a — webhook + dedupe**~~ — **done 2026-08-26.** `POST /api/webhooks/n8n/leads`, HMAC over the
    raw body, `webhook_events` idempotency, `src/lib/leads/dedupe.ts` (domain →
    phone → email → fuzzy name+city). Tables already exist.
-3. **Workspace provisioning** — create a workspace on first sign-in, or an invite
-   flow. A brand-new user still lands on "Anda belum punya workspace" and can only
-   be rescued by `pnpm db:seed`. Not a blocker for 3a, which resolves its
-   workspace from `campaign_id`.
+3. ~~**Workspace provisioning**~~ — **done 2026-08-28.** First-workspace path only;
+   no invite flow and no second-workspace entry in the switcher yet.
 4. **Slice 3b — CSV upload** into the same pipeline. ← *next.* Parser approved; XLSX dropped.
 5. **`src/lib/ai/agent.ts` + `models.ts`** — the single LLM entry point and its
    `ai_runs` row. Prerequisite for both enrichment and qualification.
@@ -496,13 +553,15 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
    a security bug, not a style nit. Flagged in the file header comment, and
    pinned by an integration test that documents the bypass. Revisit if we later
    want `SET LOCAL role` per request.
-2. **No workspace creation path.** Covered as next-up item 1.
+2. ~~**No workspace creation path.**~~ **Closed 2026-08-28** — `/app` renders a
+   create form for a user with no membership.
 3. **`listUsers({ perPage: 1000 })` does not paginate.** Two callers now:
    `scripts/seed.ts` and `listMembersWithEmail()` in `src/lib/auth/members.ts`. Fine
    for a dev seed and a handful of members; fix with the invite flow.
-4. **Every screen is read-only.** No forms, server actions, or mutations exist
-   anywhere in the product yet — including approve/reject on Persetujuan. The
-   webhook writes, but nothing in the UI does.
+4. **Every screen inside a workspace is still read-only.** Workspace creation is
+   now the one mutation the UI can make; everything after it — approve/reject on
+   Persetujuan, editing a lead, creating a campaign — is still unwritable. The
+   webhook writes, but nothing behind `/app/{workspace}/…` does.
 5. **Imported leads are invisible until a screen shows them.** Ingestion writes
    companies, contacts and leads that the existing Leads screen renders, but there
    is no import history view and no way to see a rejection after the fact — the
@@ -512,16 +571,19 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
    code, which occurs in scraped data; wrong for a hypothetical landline whose
    area code is literally `62`, which is not in Indonesia's numbering plan.
    Documented in the function.
-7. **Real imports and the seed share one workspace, and the seed test asserts
-   exact counts.** `tests/integration/seed.test.ts` pins `companies: 60`,
-   `leads: 60`, `webhook_events: 3` scoped to `maju-bersama`. The seed is
-   idempotent but does not delete rows it did not write, so every ingested lead
-   pushes those counts up and `pnpm test:integration` fails until `pnpm db:reset`
-   — which in turn throws the imported leads away. Measured after the 2026-08-28
-   wiring proof: 62 / 62 / 4. The assertions are right; the arrangement is wrong.
-   The real fix is a separate workspace for real imports, which arrives with
-   workspace provisioning (next-up item 3). Until then, `db:reset` before running
-   the integration suite and accept that imports are disposable.
+7. **Running the integration suite silently destroys anything imported into
+   `maju-bersama`.** Corrected 2026-08-28 — the first version of this entry said
+   `pnpm test:integration` would *fail* on the seed's exact counts until a reset.
+   It does not. `scripts/seed.ts:689` deletes the workspace row and lets the
+   cascade take every domain table with it before rebuilding, and
+   `tests/integration/seed.test.ts` runs that seed in `beforeAll`. So the counts
+   are always correct by the time they are asserted, and the suite passes — after
+   quietly throwing away every real lead in that workspace. Loud failure would
+   have been the kinder outcome. The fix is a separate workspace for real
+   imports; provisioning (done) is half of it, and the other half is a way to
+   create a campaign, since the webhook resolves its workspace from
+   `campaign_id`. Until then, treat anything imported into `maju-bersama` as
+   disposable.
 
 ---
 
@@ -556,6 +618,9 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 | 25 | The integration suite aliases `server-only` to a stub | The guard is a build-time boundary that stops client bundles pulling in server code; this suite produces no bundle. Aliasing it lets the acceptance test drive the real route handler instead of a copy of its logic. |
 | 26 | The n8n secret lives in a `SORA Config` Set node, not `$env` | n8n Cloud blocks `$env` in Code nodes (`N8N_BLOCK_ENV_ACCESS_IN_NODE` defaults true, no Cloud override), so the documented approach could not work on the deployment we actually use. A Set node works on Cloud and self-hosted alike. `$vars` is better where the plan has it, and the Code node reads config from one place so switching is a one-line change. |
 | 27 | The unanswered "duplicate company in a different campaign" question stays unanswered, and the current behaviour stands | Asked 2026-08-26, not answered by 2026-08-28. Per CLAUDE.md §4 the simplest option wins: SPEC's literal "on duplicate: don't insert" remains implemented, so a company found for campaign A gets no lead when campaign B targets it. Revisit before running a second campaign over the same city. |
+| 28 | The create-workspace form lives on `/app`, not `/app/new` | A literal segment under `/app` is resolved by Next.js before the `[workspace]` dynamic one, so `/app/new` would make any workspace slugged `new` permanently unreachable — the exact collision `.claude/rules/structure.md` exists to prevent. `/app` already redirects anyone who has a workspace, so the form is only reachable by someone with none. `slug.ts` reserves the word anyway, belt and braces. |
+| 29 | `slugifyWorkspaceName` delegates legal-form stripping to `normalizeCompanyName` | "PT Maju Bersama" → `maju-bersama` needs the same judgement dedupe already makes about what a company is really called. A second copy would drift from the first, which is the reasoning behind decision 23. The known limitation is inherited too: `P.T. Maju` keeps the dotted prefix, pinned by a test rather than fixed, because widening that regex would change fuzzy matching. |
+| 30 | Workspace provisioning ships without campaign creation, and therefore does not close known issue 7 | Owner decision, 2026-08-28. CLAUDE.md §4 is one vertical slice at a time. It does mean the issue stays open: the n8n webhook resolves its workspace from `campaign_id`, so a fresh workspace with no campaign cannot receive an import, and real imports still have nowhere to go but the seeded workspace. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
