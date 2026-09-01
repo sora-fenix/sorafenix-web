@@ -508,10 +508,25 @@ Two things this taught us about n8n 2.x, both caught by its import validator:
   bound. Re-importing the committed file instead would unbind it — the
   committed copy carries a placeholder credential id on purpose.
 
-**Not executed end to end.** The structure is verified — n8n accepted it and the
-re-export shows the loop wired done→`Run Summary`, loop→`Set Search Params`,
-`Send to SORA`→loop — but no run has gone through it, because a run spends the
-owner's Serper credits and fetches real websites. First real Execute is the test.
+**Executed by the owner, same day, and it works.** The batch key format came
+through as designed — `run_pet-shop-surabaya-p1_20260901064802` — and the second
+sweep of the same city added one new business and merged nine, which is dedupe
+doing exactly its job across runs.
+
+Two findings from the first real numbers:
+
+1. **`jumlah: 20` did not produce 20.** Both runs posted 10 items. Either Serper
+   `/places` ignores `num` and pages at 10, or `Extract Contacts` dropped half on
+   its no-contact-channel filter. Not yet distinguished — the answer is visible
+   in the execution's item count between `Serper Places` and `Split Out Places`.
+   Until it is settled, **`PAGES` is the reliable way to get more per city**, not
+   a bigger `jumlah`.
+2. **This segment has no websites.** All 11 companies came back with an empty
+   domain, so `with_email` is 0 and `Fetch Website` / `Fetch Contact Page` did
+   nothing but time out against the `no-website.invalid` sentinel. Every business
+   has a phone (11/11) and 8 of 11 have WhatsApp, because the mobile numbers
+   pass `is_mobile`. For pet shops in Surabaya the outreach channel is WhatsApp,
+   not email — worth remembering when Module 6 and 7 are prioritised.
 
 ### Left for the owner, in the n8n UI
 
