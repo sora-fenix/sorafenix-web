@@ -486,6 +486,33 @@ pnpm test:integration    → 52 passed (4 files)
 data-riil                → 10 leads, 10 companies, 10 activities, untouched
 ```
 
+### Batch scraping (2026-09-01, same session)
+
+The workflow searched one keyword in one city per Execute. It now sweeps
+**keyword × city × page**: a `Search Plan` Code node emits the combinations and
+`Loop Over Searches` (splitInBatches, size 1) drives the existing chain once per
+combination, looping back from `Send to SORA`. `Run Summary` sits on the done
+output and totals the responses.
+
+Each iteration keeps its own `idempotency_key` — now carrying the page number —
+so one failed search costs only itself, and `Normalize Place` still reads the
+right city because `$('Set Search Params')` resolves to the current iteration.
+`Every morning at 08:00` is present and disabled, one toggle plus Active away.
+
+Two things this taught us about n8n 2.x, both caught by its import validator:
+
+- **Duplicate node names are now rejected.** The original export had five sticky
+  notes all called `Sticky b100`. They are named after their headings now.
+- The workflow was patched by exporting the live copy, editing, and
+  `n8n import:workflow` back onto the same id, which keeps the Serper credential
+  bound. Re-importing the committed file instead would unbind it — the
+  committed copy carries a placeholder credential id on purpose.
+
+**Not executed end to end.** The structure is verified — n8n accepted it and the
+re-export shows the loop wired done→`Run Summary`, loop→`Set Search Params`,
+`Send to SORA`→loop — but no run has gone through it, because a run spends the
+owner's Serper credits and fetches real websites. First real Execute is the test.
+
 ### Left for the owner, in the n8n UI
 
 Two steps, once: create the local owner account at http://localhost:5678, then

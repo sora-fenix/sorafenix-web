@@ -6,8 +6,8 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        0,
-        0
+        480,
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000001",
       "name": "When clicking 'Execute workflow'"
@@ -19,26 +19,32 @@
             {
               "id": "f1",
               "name": "keyword",
-              "value": "pet shop",
+              "value": "={{ $json.keyword }}",
               "type": "string"
             },
             {
               "id": "f2",
               "name": "lokasi",
-              "value": "Surabaya",
+              "value": "={{ $json.lokasi }}",
               "type": "string"
             },
             {
               "id": "f3",
               "name": "jumlah",
-              "value": 20,
+              "value": "={{ $json.jumlah }}",
               "type": "number"
             },
             {
               "id": "f4",
               "name": "negara",
-              "value": "id",
+              "value": "={{ $json.negara }}",
               "type": "string"
+            },
+            {
+              "id": "f5",
+              "name": "page",
+              "value": "={{ $json.page }}",
+              "type": "number"
             }
           ]
         },
@@ -47,8 +53,8 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        220,
-        0
+        1152,
+        560
       ],
       "id": "a1000000-0000-4000-8000-000000000002",
       "name": "Set Search Params"
@@ -61,7 +67,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ q: $json.keyword + ' ' + $json.lokasi, gl: $json.negara, hl: 'id', num: $json.jumlah }) }}",
+        "jsonBody": "={{ JSON.stringify({ q: $json.keyword + ' ' + $json.lokasi, gl: $json.negara, hl: 'id', num: $json.jumlah, page: $json.page }) }}",
         "options": {
           "timeout": 20000
         }
@@ -69,8 +75,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        440,
-        0
+        1376,
+        560
       ],
       "id": "a1000000-0000-4000-8000-000000000003",
       "name": "Serper Places",
@@ -89,8 +95,8 @@
       "type": "n8n-nodes-base.splitOut",
       "typeVersion": 1,
       "position": [
-        660,
-        0
+        1600,
+        560
       ],
       "id": "a1000000-0000-4000-8000-000000000004",
       "name": "Split Out Places",
@@ -104,8 +110,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        880,
-        0
+        1824,
+        560
       ],
       "id": "a1000000-0000-4000-8000-000000000005",
       "name": "Normalize Place"
@@ -153,8 +159,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1100,
-        0
+        2048,
+        560
       ],
       "id": "a1000000-0000-4000-8000-000000000006",
       "name": "Fetch Website",
@@ -205,8 +211,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1320,
-        0
+        2272,
+        560
       ],
       "id": "a1000000-0000-4000-8000-000000000007",
       "name": "Fetch Contact Page",
@@ -221,8 +227,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1540,
-        0
+        2496,
+        560
       ],
       "id": "a1000000-0000-4000-8000-000000000008",
       "name": "Extract Contacts"
@@ -230,82 +236,82 @@
     {
       "parameters": {
         "content": "## 1. SETUP SEBELUM RUN\n\n**A. Credential Serper** (satu kali, tidak ikut ke git):\nCredentials → New → **Header Auth**\n- Name: `X-API-KEY`\n- Value: `<API key Serper kamu>`\nSimpan sebagai `Serper API Key`, lalu pilih di node **Serper Places**.\n\n**B. Sisanya sudah otomatis.** Secret webhook, campaign id dan URL SORA datang\ndari environment kontainer — lihat `docker-compose.n8n.yml` di repo. Tidak ada\nrahasia yang disimpan di dalam workflow ini.\n\n**C. Pastikan `pnpm dev` jalan di host** sebelum Execute, kalau tidak node\n**Send to SORA** akan gagal connect ke `host.docker.internal:3000`.",
-        "height": 380,
-        "width": 620,
+        "height": 400,
+        "width": 600,
         "color": 3
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        0,
-        -420
+        1400,
+        0
       ],
       "id": "b1000000-0000-4000-8000-000000000001",
-      "name": "Sticky b100"
+      "name": "Note: 1. SETUP SEBELUM RUN"
     },
     {
       "parameters": {
         "content": "## 2. Kenapa pakai /places, bukan /search\n\nEndpoint `/places` menarik data Google Maps: **nama, alamat, nomor telepon, rating, website** langsung dari sumbernya.\n\n`/search` cuma kasih 10 link biru yang harus kamu scrape satu-satu, dan kebanyakan hasilnya marketplace/direktori, bukan bisnisnya.\n\n`num` realistis di 20 per request. Untuk lebih banyak, tambah field `page` (2, 3, ...) di jsonBody dan loop.",
-        "height": 380,
-        "width": 420,
+        "height": 400,
+        "width": 600,
         "color": 4
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        640,
-        -420
+        2040,
+        0
       ],
       "id": "b1000000-0000-4000-8000-000000000002",
-      "name": "Sticky b100"
+      "name": "Note: 2. Kenapa pakai /places, bukan /search"
     },
     {
       "parameters": {
         "content": "## 3. Kenapa tidak ada Merge node\n\nDi workflow lama, `If` dan `HTTP Request1` sama-sama nyambung ke **Merge input 0**. Input 1 tidak pernah keisi -> combine-by-position menggantung, tidak ada output. Itu error utamanya.\n\nSekarang flow-nya **lurus**. Kedua node fetch di-set:\n- `onError: continueRegularOutput`\n- `alwaysOutputData: true`\n\nArtinya website mati / 403 / timeout tetap mengeluarkan 1 item. Jumlah item selalu 1:1 dari awal sampai akhir, jadi node **Extract Contacts** aman mencocokkan data pakai index.\n\nBisnis tanpa website diarahkan ke `no-website.invalid` yang dijamin gagal resolve — item tetap lolos dengan nomor telepon dari Google Maps.",
-        "height": 380,
-        "width": 480,
+        "height": 400,
+        "width": 600,
         "color": 5
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        1080,
-        -420
+        2680,
+        0
       ],
       "id": "b1000000-0000-4000-8000-000000000003",
-      "name": "Sticky b100"
+      "name": "Note: 3. Kenapa tidak ada Merge node"
     },
     {
       "parameters": {
         "content": "## 4. Yang diperbaiki di ekstraksi\n\n**Nomor telepon:** regex lama `(?:\\+62|62|0)8\\d{8,12}` gagal di `0812-3456-7890` dan `+62 812 3456 7890` — format paling umum di website Indonesia. Sekarang separator diizinkan, baru dinormalisasi ke E.164. Harga seperti `62.000` tidak lagi ketuker jadi nomor HP.\n\n**Email:** HTML di-strip jadi teks dulu, jadi tidak lagi menangkap `logo@2x.png` atau email di dalam `<script>` Sentry. `mailto:` diprioritaskan. `noreply@`, `sentry.io`, `wixpress` disaring.\n\n**Pemilihan email:** email di domain yang sama dengan website menang atas Gmail; `sales@`/`info@`/`cs@` menang atas alamat acak.\n\n**Halaman kontak** ikut di-fetch — email sering hanya ada di sana, tidak di homepage.\n\n**Dedupe** per run pakai domain > telepon > nama.",
-        "height": 380,
-        "width": 480,
+        "height": 400,
+        "width": 600,
         "color": 6
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        1580,
-        -420
+        3320,
+        0
       ],
       "id": "b1000000-0000-4000-8000-000000000004",
-      "name": "Sticky b100"
+      "name": "Note: 4. Yang diperbaiki di ekstraksi"
     },
     {
       "parameters": {
         "content": "## 5. Ujung workflow: kirim ke SORA\n\n`Append to Sheet` sudah diganti tiga node: **SORA Config → Build SORA Payload →\nSend to SORA**, POST ke `/api/webhooks/n8n/leads` dengan header\n`x-sora-signature` (HMAC SHA-256 atas raw body).\n\n**Body Content Type di node HTTP wajib `Raw`.** Pilih JSON dan n8n akan\nmen-serialisasi ulang objeknya — byte-nya berubah, tanda tangan tidak cocok, dan\ngejalanya persis seperti secret yang salah (401 invalid_signature).\n\nBalasan sukses: `{\"accepted\":N,\"inserted\":N,\"duplicates\":N,\"rejected\":[],\"replayed\":false}`.\nJalankan ulang dengan idempotency_key yang sama → `\"replayed\":true`, 0 baris baru.\n\nScoring, dedupe lintas-run, enrichment dan CRM dikerjakan di aplikasi. n8n cukup\njadi tukang scrape.",
-        "height": 300,
-        "width": 620,
+        "height": 400,
+        "width": 600,
         "color": 7
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        0,
-        220
+        3960,
+        0
       ],
       "id": "b1000000-0000-4000-8000-000000000005",
-      "name": "Sticky b100"
+      "name": "Note: 5. Ujung workflow: kirim ke SORA"
     },
     {
       "parameters": {
@@ -331,8 +337,8 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        1760,
-        0
+        2720,
+        560
       ],
       "id": "sora-config-0001",
       "name": "SORA Config",
@@ -341,13 +347,13 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// ── Build SORA Payload ───────────────────────────────────────────────────────\n// Maps the sheet-shaped output of Extract Contacts onto the API contract in\n// docs/SPEC.md §2, then signs it.\n//\n// Sheet headers (\"Nama Bisnis\") are a presentation format. The API speaks one\n// canonical shape so that n8n, CSV upload and anything added later all land in\n// the same pipeline.\n\n// Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto, which docker-compose.n8n.yml sets.\nconst crypto = require('crypto');\n\nconst config = $('SORA Config').first().json;\nconst SECRET = config.webhook_secret;\nconst CAMPAIGN_ID = config.campaign_id;\n\nif (!SECRET) throw new Error('SORA Config: webhook_secret is empty — is SORA_WEBHOOK_SECRET set on the container?');\nif (!CAMPAIGN_ID) throw new Error('SORA Config: campaign_id is empty — run `pnpm campaign:create` and set SORA_CAMPAIGN_ID');\n\nfunction clean(value) {\n  const s = String(value ?? '').trim();\n  return s === '' ? null : s;\n}\n\nconst items = $input.all().map((item) => {\n  const j = item.json || {};\n\n  // Google Maps provenance, so \"where did this lead come from\" stays answerable.\n  const cid = clean(j.maps_cid);\n  const sourceUrl = cid ? `https://www.google.com/maps?cid=${cid}` : clean(j.Website);\n\n  return {\n    company_name: String(j['Nama Bisnis'] ?? '').trim(),\n    category: clean(j['Kategori']),\n    address: clean(j['Alamat']),\n    city: clean(j['Kota']),\n    website: clean(j['Website']),\n    email: clean(j['Email']),\n    phone: clean(j['No. Telepon']),\n    whatsapp: clean(j['WhatsApp']),\n    source_url: sourceUrl,\n    // Everything else rides along untouched, for debugging and re-processing.\n    raw: j,\n  };\n});\n\n// One key per run, computed once. A retry of THIS run must reuse it — that is\n// what makes a redelivery insert nothing. A new search gets a new key.\nconst params = $('Set Search Params').first().json;\nconst stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);\nconst slug = `${params.keyword}-${params.lokasi}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');\nconst idempotencyKey = `run_${slug}_${stamp}`;\n\nconst payload = {\n  campaign_id: CAMPAIGN_ID,\n  source: 'serper_places',\n  idempotency_key: idempotencyKey,\n  items,\n};\n\n// Sign the string that will actually be sent, and send this exact string.\nconst body = JSON.stringify(payload);\nconst signature =\n  'sha256=' + crypto.createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');\n\nreturn [{ json: { body, signature, item_count: items.length, idempotency_key: idempotencyKey } }];\n"
+        "jsCode": "// ── Build SORA Payload ───────────────────────────────────────────────────────\n// Maps the sheet-shaped output of Extract Contacts onto the API contract in\n// docs/SPEC.md §2, then signs it.\n//\n// Sheet headers (\"Nama Bisnis\") are a presentation format. The API speaks one\n// canonical shape so that n8n, CSV upload and anything added later all land in\n// the same pipeline.\n\n// Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto, which docker-compose.n8n.yml sets.\nconst crypto = require('crypto');\n\nconst config = $('SORA Config').first().json;\nconst SECRET = config.webhook_secret;\nconst CAMPAIGN_ID = config.campaign_id;\n\nif (!SECRET) throw new Error('SORA Config: webhook_secret is empty — is SORA_WEBHOOK_SECRET set on the container?');\nif (!CAMPAIGN_ID) throw new Error('SORA Config: campaign_id is empty — run `pnpm campaign:create` and set SORA_CAMPAIGN_ID');\n\nfunction clean(value) {\n  const s = String(value ?? '').trim();\n  return s === '' ? null : s;\n}\n\nconst items = $input.all().map((item) => {\n  const j = item.json || {};\n\n  // Google Maps provenance, so \"where did this lead come from\" stays answerable.\n  const cid = clean(j.maps_cid);\n  const sourceUrl = cid ? `https://www.google.com/maps?cid=${cid}` : clean(j.Website);\n\n  return {\n    company_name: String(j['Nama Bisnis'] ?? '').trim(),\n    category: clean(j['Kategori']),\n    address: clean(j['Alamat']),\n    city: clean(j['Kota']),\n    website: clean(j['Website']),\n    email: clean(j['Email']),\n    phone: clean(j['No. Telepon']),\n    whatsapp: clean(j['WhatsApp']),\n    source_url: sourceUrl,\n    // Everything else rides along untouched, for debugging and re-processing.\n    raw: j,\n  };\n});\n\n// One key per run, computed once. A retry of THIS run must reuse it — that is\n// what makes a redelivery insert nothing. A new search gets a new key.\nconst params = $('Set Search Params').first().json;\nconst stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);\nconst slug = `${params.keyword}-${params.lokasi}-p${params.page ?? 1}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');\nconst idempotencyKey = `run_${slug}_${stamp}`;\n\nconst payload = {\n  campaign_id: CAMPAIGN_ID,\n  source: 'serper_places',\n  idempotency_key: idempotencyKey,\n  items,\n};\n\n// Sign the string that will actually be sent, and send this exact string.\nconst body = JSON.stringify(payload);\nconst signature =\n  'sha256=' + crypto.createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');\n\nreturn [{ json: { body, signature, item_count: items.length, idempotency_key: idempotencyKey } }];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1980,
-        0
+        2944,
+        560
       ],
       "id": "sora-payload-0001",
       "name": "Build SORA Payload"
@@ -376,12 +382,92 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2200,
-        0
+        3168,
+        560
       ],
       "id": "sora-send-0001",
       "name": "Send to SORA",
       "notes": "Body Content Type MUST stay Raw. JSON re-serialises the object and the signature stops matching."
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        600
+      ],
+      "id": "sora-schedule-0001",
+      "name": "Every morning at 08:00",
+      "disabled": true,
+      "notes": "Disabled. Enable this AND activate the workflow to scrape on a schedule."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ── Search Plan ──────────────────────────────────────────────────────────────\n// The only place you edit for a bigger sweep. One Execute runs every\n// combination below, one search at a time, and each lands in SORA separately.\n//\n// Serper /places returns at most 20 per request, so PAGES is how you go past 20\n// for a single city: [1, 2, 3] gives up to 60.\n\nconst KEYWORDS = ['pet shop'];\nconst KOTA     = ['Surabaya'];\nconst PAGES    = [1];\n\nconst JUMLAH = 20;   // per request; 20 is the Serper /places ceiling\nconst NEGARA = 'id';\n\nconst plan = [];\nfor (const keyword of KEYWORDS) {\n  for (const lokasi of KOTA) {\n    for (const page of PAGES) {\n      plan.push({ json: { keyword, lokasi, page, jumlah: JUMLAH, negara: NEGARA } });\n    }\n  }\n}\n\nif (plan.length === 0) throw new Error('Search Plan is empty — fill KEYWORDS and KOTA');\n\n// One Serper request per item, plus up to two page fetches per business found.\n// 12 combinations is a few minutes, not seconds.\nreturn plan;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        432
+      ],
+      "id": "sora-plan-0001",
+      "name": "Search Plan"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        928,
+        432
+      ],
+      "id": "sora-loop-0001",
+      "name": "Loop Over Searches",
+      "notes": "One search per iteration. Output 0 is done, output 1 is the loop body."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ── Run Summary ──────────────────────────────────────────────────────────────\n// The loop's \"done\" output carries what every iteration returned — one response\n// from SORA per search. Totals here, details in the individual Send to SORA runs.\n\nlet accepted = 0, inserted = 0, duplicates = 0, rejected = 0, replayed = 0;\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  accepted   += j.accepted   || 0;\n  inserted   += j.inserted   || 0;\n  duplicates += j.duplicates || 0;\n  rejected   += Array.isArray(j.rejected) ? j.rejected.length : 0;\n  if (j.replayed) replayed += 1;\n}\n\nreturn [{ json: { searches: $input.all().length, accepted, inserted, duplicates, rejected, replayed } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        240
+      ],
+      "id": "sora-summary-0001",
+      "name": "Run Summary"
+    },
+    {
+      "parameters": {
+        "content": "## 0. SCRAPING SERIUS — mulai di sini\n\nSatu Execute menyapu **keyword × kota × halaman**. Yang Anda sunting cuma tiga\nbaris di node **Search Plan**:\n\n```\nconst KEYWORDS = ['pet shop', 'klinik hewan'];\nconst KOTA     = ['Surabaya', 'Sidoarjo', 'Malang'];\nconst PAGES    = [1, 2];\n```\n\nItu 2 × 3 × 2 = **12 pencarian**, dijalankan satu per satu oleh\n**Loop Over Searches**, masing-masing dikirim ke SORA sebagai batch sendiri\ndengan idempotency key sendiri. **Run Summary** menjumlahkan hasilnya.\n\n**Serper maksimal 20 hasil per request.** `PAGES = [1,2,3]` itulah cara\nmelewati 20 untuk satu kota.\n\n**Mengulang kombinasi yang sama besok aman.** Dedupe SORA (domain → telepon →\nemail → nama+kota) menggabungkannya; merge hanya mengisi kolom kosong, tidak\npernah menimpa yang sudah ada.\n\n**Kalau cuma butuh telepon/WhatsApp dari Google Maps:** disable\n**Fetch Website** + **Fetch Contact Page** (klik kanan → Deactivate). Dua node\nitu yang memakan waktu — 20 bisnis = sampai 40 request ke website orang. Email\nmemang hanya ketemu dari sana, jadi aktifkan lagi saat berburu email.\n\n**Terjadwal:** aktifkan node *Every morning at 08:00* lalu set workflow ke\nActive. Selama masih Inactive, node itu diam meski di-enable.",
+        "height": 700,
+        "width": 860,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        480,
+        -320
+      ],
+      "id": "sora-sticky-batch",
+      "name": "Note: 0. SCRAPING SERIUS — mulai di sini"
     }
   ],
   "connections": {
@@ -389,7 +475,7 @@
       "main": [
         [
           {
-            "node": "Set Search Params",
+            "node": "Search Plan",
             "type": "main",
             "index": 0
           }
@@ -489,6 +575,57 @@
         [
           {
             "node": "Send to SORA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every morning at 08:00": {
+      "main": [
+        [
+          {
+            "node": "Search Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Plan": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Searches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Searches": {
+      "main": [
+        [
+          {
+            "node": "Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Search Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to SORA": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Searches",
             "type": "main",
             "index": 0
           }

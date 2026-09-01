@@ -99,6 +99,46 @@ outside the machine — see *Reaching a local machine from n8n Cloud* below.
 
 ---
 
+## Scraping at volume
+
+One Execute sweeps **keyword × city × page**. Everything you edit for a bigger
+run is three lines in the `Search Plan` node:
+
+```js
+const KEYWORDS = ['pet shop', 'klinik hewan'];
+const KOTA     = ['Surabaya', 'Sidoarjo', 'Malang'];
+const PAGES    = [1, 2];
+```
+
+That is 12 searches. `Loop Over Searches` runs them one at a time through the
+whole chain, so each search POSTs its own batch with its own
+`idempotency_key` (`run_{keyword}-{kota}-p{page}_{stamp}`), and one failure does
+not cost the others. `Run Summary` on the loop's *done* output totals what came
+back.
+
+**Serper `/places` returns at most 20 per request.** `PAGES` is how a city goes
+past 20 — `[1, 2, 3]` gives up to 60.
+
+**Re-running the same combination tomorrow is safe.** A new run gets a new key,
+so nothing is replayed away; SORA's dedupe collapses what it has seen before,
+and a merge only fills blank fields — it never overwrites a value a human
+corrected.
+
+**Speed.** Serper is not the slow part: `Fetch Website` and `Fetch Contact Page`
+are, at up to two page loads per business. Deactivate both when phone and
+WhatsApp from Google Maps are enough, and turn them back on when hunting for
+email addresses — that is the only place emails come from.
+
+**On a schedule.** `Every morning at 08:00` is in the workflow but **disabled**.
+Enable the node *and* set the workflow Active; a disabled node in an inactive
+workflow is inert twice over.
+
+One thing to know before splitting work across campaigns: a company already in
+the workspace gets no second lead when another campaign finds it again
+(PROGRESS decision 27). With everything in one campaign this never bites.
+
+---
+
 ## What changes in the workflow
 
 This is what was done to the original lead-hunter export, and what
