@@ -406,7 +406,8 @@ integrated with anything.** The workflow is now a repo artefact.
 | `docker-compose.n8n.yml` | n8n 2.36.9, own volume, own SQLite. Started with `--env-file .env.local` so the signing secret cannot drift from the verifying one. |
 | `n8n/workflows/sora-lead-hunter.json` | The workflow, patched and committed. No secrets in it. |
 | `scripts/create-campaign.ts` | `pnpm campaign:create` — the webhook resolves a workspace from `campaign_id`, so ingestion is impossible until a campaign exists. |
-| `package.json` | `n8n:start`, `n8n:stop`, `n8n:logs`, `campaign:create`. |
+| `scripts/create-workspace.ts` | `pnpm workspace:create` — a workspace the seed does not own, for leads worth keeping. Repeats `provision.ts`'s two inserts because that module is `server-only`. |
+| `package.json` | `n8n:start`, `n8n:stop`, `n8n:logs`, `workspace:create`, `campaign:create`. |
 
 The workflow changes are the three that were outstanding: `maps_cid` now survives
 `Extract Contacts`, `Append to Sheet` is gone, and `SORA Config →
@@ -449,6 +450,41 @@ container → host → HMAC → campaign lookup → ingest — is exercised with
 writing a fake company into real data.
 
 Gate after the change: `typecheck` clean, `lint` clean, `test` 129/129.
+
+### The first real leads, and getting them out of the seed's way
+
+The owner ran the workflow: **10 Surabaya pet shops** landed through the real
+path — Serper → n8n → HMAC → dedupe → `leads`. Phones normalised exactly as the
+unit tests promised, landlines included (`+62315995509`).
+
+They landed in `maju-bersama`, which `scripts/seed.ts` deletes on every run. So
+a second workspace was created and the import moved into it:
+
+```
+pnpm workspace:create "Data Riil" --members-from maju-bersama
+```
+
+then the campaign row itself was re-pointed at the new workspace — not copied —
+so `SORA_CAMPAIGN_ID` never changed and n8n needed no reconfiguration. Companies,
+contacts, leads and activities moved with it, in one transaction that asserted no
+row was left straddling two tenants before committing.
+
+**A mistake worth recording:** the same move updated `webhook_events` with
+`where provider = 'n8n'`, which is broader than it looks — the seed writes two
+demo rows with that provider. They travelled to `data-riil`, survived the
+cascade that a re-seed relies on, and collided on `(provider, idempotency_key)`
+the next time the seed ran, leaving `maju-bersama` half-built. Deleting the two
+strays and re-running `pnpm db:seed` restored it. The lesson is that "rows from
+n8n" and "rows the seed invented about n8n" are not the same set, and only the
+lead-bearing tables could be identified by a join.
+
+Proved afterwards, which is the whole point of the exercise:
+
+```
+pnpm db:seed             → maju-bersama rebuilt: 60 / 60 / 150
+pnpm test:integration    → 52 passed (4 files)
+data-riil                → 10 leads, 10 companies, 10 activities, untouched
+```
 
 ### Left for the owner, in the n8n UI
 
@@ -607,9 +643,13 @@ nine containers are healthy. Noted so nobody spends an afternoon on it.
 pnpm db:start            # Supabase CLI (Docker)
 pnpm db:reset            # recreate, apply 0000-0003, seed
 pnpm dev                 # sign in at /login, mail lands in Inbucket
-pnpm campaign:create     # once — prints SORA_CAMPAIGN_ID for .env.local
+pnpm workspace:create "Data Riil" --members-from maju-bersama
+pnpm campaign:create --workspace data-riil   # prints SORA_CAMPAIGN_ID
 pnpm n8n:start           # lead hunter at http://localhost:5678
 ```
+
+Real leads go in `data-riil`, never in `maju-bersama` — the seed rebuilds that
+one and takes everything in it (known issue 7, decision 32).
 
 `pnpm n8n:start` needs `N8N_ENCRYPTION_KEY` and `SORA_CAMPAIGN_ID` in
 `.env.local`; compose fails with a named variable if either is missing. Full
@@ -657,15 +697,16 @@ setup in `docs/n8n-integration.md`.
    `campaign_id`. Until then, treat anything imported into `maju-bersama` as
    disposable.
 
-   **Still open, and now load-bearing (2026-09-01).** `pnpm campaign:create`
-   supplies the missing half — but run with no arguments on this machine it
-   picks `maju-bersama`, the one workspace that exists, which is precisely the
-   workspace the seed destroys. Real n8n leads landing there survive until the
-   next `pnpm test:integration`, `pnpm db:seed` or `pnpm db:reset`, and then
-   vanish silently. The way out needs no new code: sign in at `/login` with an
-   email that has no membership, let provisioning create a second workspace, then
-   `pnpm campaign:create --workspace <new-slug>` and put that id in
-   `SORA_CAMPAIGN_ID`. The seed only ever deletes `maju-bersama`.
+   **Closed 2026-09-01.** Both halves now exist — `pnpm workspace:create` and
+   `pnpm campaign:create` — and the real import lives in `data-riil`. Verified
+   the way this entry always wanted: a full `pnpm db:seed` plus
+   `pnpm test:integration` (52 passed) with 10 real leads in place, all 10 still
+   there afterwards. The seed only ever deletes the workspace it created.
+
+   It is closed by **convention, not by code** (decision 32): running
+   `pnpm campaign:create` with no `--workspace` on a machine where only
+   `maju-bersama` exists still points real imports at the workspace the seed
+   destroys. Nothing stops that but reading the flag.
 
 ---
 

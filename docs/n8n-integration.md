@@ -33,21 +33,27 @@ Two steps are manual, once per machine:
 
 ### Which workspace the leads land in
 
-`pnpm campaign:create` with no arguments picks the only workspace that exists on
-a fresh machine — `maju-bersama`, the one `scripts/seed.ts` owns and **deletes
-and rebuilds on every run**. Leads imported there disappear at the next
-`pnpm test:integration`, `pnpm db:seed` or `pnpm db:reset`, without an error.
+**Not `maju-bersama`.** `scripts/seed.ts` owns that workspace and deletes and
+rebuilds it on every run — and `pnpm test:integration` runs the seed. Leads
+imported there disappear at the next suite run, silently (known issue 7).
 
-For leads worth keeping, give them their own workspace first: sign in at
-`/login` with an email that has no membership (the magic link lands in Inbucket
-at http://127.0.0.1:54324), let provisioning create the workspace, then
+Real leads get their own workspace:
 
 ```
-pnpm campaign:create --workspace <new-slug>
+pnpm workspace:create "Data Riil" --members-from maju-bersama
+pnpm campaign:create --workspace data-riil
 ```
 
-and put that id in `SORA_CAMPAIGN_ID`. The seed never touches any workspace but
-its own.
+Put the printed id in `SORA_CAMPAIGN_ID` and restart with `pnpm n8n:start`. The
+seed only ever deletes the workspace it created, so everything here survives it.
+
+`--members-from` copies the membership rows, roles included: a workspace nobody
+belongs to cannot be opened in the UI, and RLS makes that first membership row
+unreachable from the browser by design (see `provision.ts`).
+
+Without the scripts, the product's own path does the same thing: sign in at
+`/login` with an email that has no membership and let provisioning create the
+workspace. The magic link lands in Inbucket at http://127.0.0.1:54324.
 
 ### Where the secrets live
 
