@@ -1,0 +1,505 @@
+{
+  "name": "SORA — Lead Hunter",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "When clicking 'Execute workflow'"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "keyword",
+              "value": "pet shop",
+              "type": "string"
+            },
+            {
+              "id": "f2",
+              "name": "lokasi",
+              "value": "Surabaya",
+              "type": "string"
+            },
+            {
+              "id": "f3",
+              "name": "jumlah",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "f4",
+              "name": "negara",
+              "value": "id",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Set Search Params"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://google.serper.dev/places",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ q: $json.keyword + ' ' + $json.lokasi, gl: $json.negara, hl: 'id', num: $json.jumlah }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Serper Places",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "GANTI_DENGAN_CREDENTIAL_ANDA",
+          "name": "Serper API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "places",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        660,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Split Out Places",
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Normalize Place ───────────────────────────────────────────────\n// Merapikan output Serper /places jadi bentuk yang konsisten.\n// Node ini TIDAK memanggil internet. Cuma bersih-bersih data.\n\nconst params = $('Set Search Params').first().json;\n\nfunction toE164ID(raw) {\n  if (!raw) return '';\n  let d = String(raw).replace(/[^\\d+]/g, '');\n  if (d.startsWith('+62')) d = d.slice(1);\n  else if (d.startsWith('62')) { /* sudah benar */ }\n  else if (d.startsWith('0')) d = '62' + d.slice(1);\n  else if (d.startsWith('8')) d = '62' + d;\n  else return '';\n  d = d.replace(/\\D/g, '');\n  if (!/^62\\d{8,13}$/.test(d)) return '';\n  return '+' + d;\n}\n\nfunction originOf(url) {\n  try { return new URL(String(url)).origin; } catch (e) { return ''; }\n}\n\nfunction domainOf(url) {\n  try { return new URL(String(url)).hostname.replace(/^www\\./i, '').toLowerCase(); }\n  catch (e) { return ''; }\n}\n\n// example.invalid dijamin gagal resolve (RFC 2606) -> ditangkap onError,\n// jadi item tetap keluar 1:1 dan urutan tidak bergeser.\nconst DEAD = 'https://no-website.invalid';\n\nreturn $input.all().map((item, i) => {\n  const p = item.json || {};\n  const website = p.website || '';\n  const origin = originOf(website);\n  const domain = domainOf(website);\n  const telepon = toE164ID(p.phoneNumber);\n\n  return {\n    json: {\n      nama_bisnis: p.title || '',\n      kategori: p.category || '',\n      alamat: p.address || '',\n      kota: params.lokasi || '',\n      website: website,\n      domain: domain,\n      origin: origin,\n      telepon_gmaps: telepon,\n      is_mobile: /^\\+628/.test(telepon),\n      rating: p.rating != null ? p.rating : '',\n      jumlah_review: p.ratingCount != null ? p.ratingCount : '',\n      maps_cid: p.cid || '',\n      dedupe_key: domain || telepon || String(p.title || '').toLowerCase().trim(),\n      // URL untuk 2 node fetch berikutnya\n      url_home: origin || DEAD,\n      url_contact: origin ? origin + '/contact' : DEAD,\n    },\n    pairedItem: i,\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Normalize Place"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url_home }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "id-ID,id;q=0.9,en;q=0.8"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data",
+              "neverError": true
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1200
+            }
+          },
+          "timeout": 10000,
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Fetch Website",
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url_contact }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "id-ID,id;q=0.9,en;q=0.8"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data",
+              "neverError": true
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1200
+            }
+          },
+          "timeout": 10000,
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Fetch Contact Page",
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Extract Contacts ──────────────────────────────────────────────\n// Gabungkan metadata Google Maps + HTML homepage + HTML halaman kontak.\n// Pakai index (bukan Merge node) karena setiap node fetch di-set\n// onError=continueRegularOutput, jadi jumlah item selalu 1:1 dan urut.\n\nconst meta = $('Normalize Place').all();\nconst home = $('Fetch Website').all();\nconst items = $input.all(); // output Fetch Contact Page\n\nconst NOISE_LOCAL = /^(no-?reply|donotreply|postmaster|abuse|webmaster|mailer-daemon|privacy|dpo|example|your|email|name|user|username|sentry|wix|u003)/i;\nconst NOISE_DOMAIN = /(sentry\\.io|wixpress|godaddy|squarespace|shopify|example\\.(com|org|net)|yourdomain|yoursite|domain\\.com|email\\.com|sample\\.com|test\\.com|\\.png|\\.jpe?g|\\.gif|\\.svg|\\.webp|\\.css|\\.js|\\.woff)/i;\n\nfunction toText(h) {\n  return String(h || '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&#0?64;|&commat;/gi, '@')\n    .replace(/&amp;/gi, '&')\n    .replace(/\\s+/g, ' ');\n}\n\nfunction normPhone(raw) {\n  let d = String(raw).replace(/\\D/g, '');\n  if (d.startsWith('62')) { /* ok */ }\n  else if (d.startsWith('0')) d = '62' + d.slice(1);\n  else if (d.startsWith('8')) d = '62' + d;\n  else return '';\n  if (!/^628\\d{7,12}$/.test(d)) return '';\n  return '+' + d;\n}\n\nfunction grabEmails(rawHtml) {\n  const raw = String(rawHtml || '');\n  const found = new Set();\n\n  // 1. mailto: -> presisi paling tinggi\n  const mailtos = raw.match(/mailto:([^\"'?>\\s\\\\]+)/gi) || [];\n  for (const m of mailtos) {\n    try { found.add(decodeURIComponent(m.replace(/^mailto:/i, ''))); } catch (e) { /* skip */ }\n  }\n\n  // 2. teks polos (HTML sudah di-strip dulu, kalau tidak akan kena URL aset)\n  const plain = toText(raw).match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g) || [];\n  for (const m of plain) found.add(m);\n\n  const valid = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$/;\n  return [...found]\n    .map(function (e) { return e.trim().toLowerCase().replace(/[.,;:)\\]]+$/, ''); })\n    .filter(function (e) {\n      if (!valid.test(e)) return false;\n      if (NOISE_DOMAIN.test(e)) return false;\n      if (NOISE_LOCAL.test(e.split('@')[0])) return false;\n      return true;\n    });\n}\n\nfunction grabPhones(rawHtml) {\n  const text = toText(rawHtml).replace(/[\\u2010-\\u2015\\u00A0]/g, '-');\n  const re = /(?:\\+?62|0)[\\s.\\-]?8\\d{1,3}(?:[\\s.\\-]?\\d{2,4}){2,4}/g;\n  const out = new Set();\n  const hits = text.match(re) || [];\n  for (const h of hits) {\n    const n = normPhone(h);\n    if (n) out.add(n);\n  }\n  return [...out];\n}\n\nfunction pickEmail(emails, domain) {\n  if (!emails.length) return '';\n  function score(e) {\n    const parts = e.split('@');\n    const local = parts[0];\n    const dom = parts[1] || '';\n    let s = 0;\n    if (domain && dom === domain) s += 100;\n    if (domain && dom.endsWith('.' + domain)) s += 80;\n    if (/^(sales|marketing|info|contact|kontak|cs|customer|order|halo|hello|admin)/.test(local)) s += 20;\n    if (/(gmail|yahoo|hotmail|outlook|icloud)\\./.test(dom)) s -= 15;\n    if (local.length > 30) s -= 10;\n    return s;\n  }\n  return emails.slice().sort(function (a, b) { return score(b) - score(a); })[0];\n}\n\nconst now = new Date().toISOString().slice(0, 19).replace('T', ' ');\nconst seen = new Set();\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const m = (meta[i] && meta[i].json) || {};\n  const h1 = (home[i] && home[i].json && home[i].json.data) || '';\n  const h2 = (items[i] && items[i].json && items[i].json.data) || '';\n  const blob = String(h1) + ' ' + String(h2);\n\n  const emails = grabEmails(blob);\n  const phones = grabPhones(blob);\n\n  const email = pickEmail(emails, m.domain);\n  const telepon = m.telepon_gmaps || phones[0] || '';\n  const whatsapp = m.is_mobile ? m.telepon_gmaps : (phones[0] || '');\n\n  // Buang yang tidak punya jalur kontak sama sekali - itu bukan lead.\n  if (!email && !telepon && !m.website) continue;\n\n  // Dedupe dalam satu run\n  const key = m.dedupe_key || String(m.nama_bisnis || '').toLowerCase();\n  if (!key || seen.has(key)) continue;\n  seen.add(key);\n\n  results.push({\n    json: {\n      'Nama Bisnis': m.nama_bisnis || '',\n      'Kategori': m.kategori || '',\n      'Alamat': m.alamat || '',\n      'Kota': m.kota || '',\n      'Website': m.website || '',\n      'Email': email,\n      'Email Lain': emails.filter(function (e) { return e !== email; }).slice(0, 3).join('; '),\n      'No. Telepon': telepon,\n      'WhatsApp': whatsapp,\n      'Rating': m.rating,\n      'Jumlah Review': m.jumlah_review,\n      'Sumber': 'Google Maps via Serper',\n      'Tanggal Ambil': now,\n      maps_cid: m.maps_cid || '',\n      dedupe_key: key,\n    },\n    pairedItem: i,\n  });\n}\n\nreturn results;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ],
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Extract Contacts"
+    },
+    {
+      "parameters": {
+        "content": "## 1. SETUP SEBELUM RUN\n\n**A. Credential Serper** (satu kali, tidak ikut ke git):\nCredentials → New → **Header Auth**\n- Name: `X-API-KEY`\n- Value: `<API key Serper kamu>`\nSimpan sebagai `Serper API Key`, lalu pilih di node **Serper Places**.\n\n**B. Sisanya sudah otomatis.** Secret webhook, campaign id dan URL SORA datang\ndari environment kontainer — lihat `docker-compose.n8n.yml` di repo. Tidak ada\nrahasia yang disimpan di dalam workflow ini.\n\n**C. Pastikan `pnpm dev` jalan di host** sebelum Execute, kalau tidak node\n**Send to SORA** akan gagal connect ke `host.docker.internal:3000`.",
+        "height": 380,
+        "width": 620,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -420
+      ],
+      "id": "b1000000-0000-4000-8000-000000000001",
+      "name": "Sticky b100"
+    },
+    {
+      "parameters": {
+        "content": "## 2. Kenapa pakai /places, bukan /search\n\nEndpoint `/places` menarik data Google Maps: **nama, alamat, nomor telepon, rating, website** langsung dari sumbernya.\n\n`/search` cuma kasih 10 link biru yang harus kamu scrape satu-satu, dan kebanyakan hasilnya marketplace/direktori, bukan bisnisnya.\n\n`num` realistis di 20 per request. Untuk lebih banyak, tambah field `page` (2, 3, ...) di jsonBody dan loop.",
+        "height": 380,
+        "width": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        640,
+        -420
+      ],
+      "id": "b1000000-0000-4000-8000-000000000002",
+      "name": "Sticky b100"
+    },
+    {
+      "parameters": {
+        "content": "## 3. Kenapa tidak ada Merge node\n\nDi workflow lama, `If` dan `HTTP Request1` sama-sama nyambung ke **Merge input 0**. Input 1 tidak pernah keisi -> combine-by-position menggantung, tidak ada output. Itu error utamanya.\n\nSekarang flow-nya **lurus**. Kedua node fetch di-set:\n- `onError: continueRegularOutput`\n- `alwaysOutputData: true`\n\nArtinya website mati / 403 / timeout tetap mengeluarkan 1 item. Jumlah item selalu 1:1 dari awal sampai akhir, jadi node **Extract Contacts** aman mencocokkan data pakai index.\n\nBisnis tanpa website diarahkan ke `no-website.invalid` yang dijamin gagal resolve — item tetap lolos dengan nomor telepon dari Google Maps.",
+        "height": 380,
+        "width": 480,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        -420
+      ],
+      "id": "b1000000-0000-4000-8000-000000000003",
+      "name": "Sticky b100"
+    },
+    {
+      "parameters": {
+        "content": "## 4. Yang diperbaiki di ekstraksi\n\n**Nomor telepon:** regex lama `(?:\\+62|62|0)8\\d{8,12}` gagal di `0812-3456-7890` dan `+62 812 3456 7890` — format paling umum di website Indonesia. Sekarang separator diizinkan, baru dinormalisasi ke E.164. Harga seperti `62.000` tidak lagi ketuker jadi nomor HP.\n\n**Email:** HTML di-strip jadi teks dulu, jadi tidak lagi menangkap `logo@2x.png` atau email di dalam `<script>` Sentry. `mailto:` diprioritaskan. `noreply@`, `sentry.io`, `wixpress` disaring.\n\n**Pemilihan email:** email di domain yang sama dengan website menang atas Gmail; `sales@`/`info@`/`cs@` menang atas alamat acak.\n\n**Halaman kontak** ikut di-fetch — email sering hanya ada di sana, tidak di homepage.\n\n**Dedupe** per run pakai domain > telepon > nama.",
+        "height": 380,
+        "width": 480,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        -420
+      ],
+      "id": "b1000000-0000-4000-8000-000000000004",
+      "name": "Sticky b100"
+    },
+    {
+      "parameters": {
+        "content": "## 5. Ujung workflow: kirim ke SORA\n\n`Append to Sheet` sudah diganti tiga node: **SORA Config → Build SORA Payload →\nSend to SORA**, POST ke `/api/webhooks/n8n/leads` dengan header\n`x-sora-signature` (HMAC SHA-256 atas raw body).\n\n**Body Content Type di node HTTP wajib `Raw`.** Pilih JSON dan n8n akan\nmen-serialisasi ulang objeknya — byte-nya berubah, tanda tangan tidak cocok, dan\ngejalanya persis seperti secret yang salah (401 invalid_signature).\n\nBalasan sukses: `{\"accepted\":N,\"inserted\":N,\"duplicates\":N,\"rejected\":[],\"replayed\":false}`.\nJalankan ulang dengan idempotency_key yang sama → `\"replayed\":true`, 0 baris baru.\n\nScoring, dedupe lintas-run, enrichment dan CRM dikerjakan di aplikasi. n8n cukup\njadi tukang scrape.",
+        "height": 300,
+        "width": 620,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        220
+      ],
+      "id": "b1000000-0000-4000-8000-000000000005",
+      "name": "Sticky b100"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "sora-secret",
+              "name": "webhook_secret",
+              "value": "={{ $env.SORA_WEBHOOK_SECRET }}",
+              "type": "string"
+            },
+            {
+              "id": "sora-campaign",
+              "name": "campaign_id",
+              "value": "={{ $env.SORA_CAMPAIGN_ID }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1760,
+        0
+      ],
+      "id": "sora-config-0001",
+      "name": "SORA Config",
+      "notes": "Reads the environment set by docker-compose.n8n.yml. On n8n Cloud, $env is blocked — paste literal values here instead."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ── Build SORA Payload ───────────────────────────────────────────────────────\n// Maps the sheet-shaped output of Extract Contacts onto the API contract in\n// docs/SPEC.md §2, then signs it.\n//\n// Sheet headers (\"Nama Bisnis\") are a presentation format. The API speaks one\n// canonical shape so that n8n, CSV upload and anything added later all land in\n// the same pipeline.\n\n// Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto, which docker-compose.n8n.yml sets.\nconst crypto = require('crypto');\n\nconst config = $('SORA Config').first().json;\nconst SECRET = config.webhook_secret;\nconst CAMPAIGN_ID = config.campaign_id;\n\nif (!SECRET) throw new Error('SORA Config: webhook_secret is empty — is SORA_WEBHOOK_SECRET set on the container?');\nif (!CAMPAIGN_ID) throw new Error('SORA Config: campaign_id is empty — run `pnpm campaign:create` and set SORA_CAMPAIGN_ID');\n\nfunction clean(value) {\n  const s = String(value ?? '').trim();\n  return s === '' ? null : s;\n}\n\nconst items = $input.all().map((item) => {\n  const j = item.json || {};\n\n  // Google Maps provenance, so \"where did this lead come from\" stays answerable.\n  const cid = clean(j.maps_cid);\n  const sourceUrl = cid ? `https://www.google.com/maps?cid=${cid}` : clean(j.Website);\n\n  return {\n    company_name: String(j['Nama Bisnis'] ?? '').trim(),\n    category: clean(j['Kategori']),\n    address: clean(j['Alamat']),\n    city: clean(j['Kota']),\n    website: clean(j['Website']),\n    email: clean(j['Email']),\n    phone: clean(j['No. Telepon']),\n    whatsapp: clean(j['WhatsApp']),\n    source_url: sourceUrl,\n    // Everything else rides along untouched, for debugging and re-processing.\n    raw: j,\n  };\n});\n\n// One key per run, computed once. A retry of THIS run must reuse it — that is\n// what makes a redelivery insert nothing. A new search gets a new key.\nconst params = $('Set Search Params').first().json;\nconst stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);\nconst slug = `${params.keyword}-${params.lokasi}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');\nconst idempotencyKey = `run_${slug}_${stamp}`;\n\nconst payload = {\n  campaign_id: CAMPAIGN_ID,\n  source: 'serper_places',\n  idempotency_key: idempotencyKey,\n  items,\n};\n\n// Sign the string that will actually be sent, and send this exact string.\nconst body = JSON.stringify(payload);\nconst signature =\n  'sha256=' + crypto.createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');\n\nreturn [{ json: { body, signature, item_count: items.length, idempotency_key: idempotencyKey } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        0
+      ],
+      "id": "sora-payload-0001",
+      "name": "Build SORA Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SORA_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-sora-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        0
+      ],
+      "id": "sora-send-0001",
+      "name": "Send to SORA",
+      "notes": "Body Content Type MUST stay Raw. JSON re-serialises the object and the signature stops matching."
+    }
+  ],
+  "connections": {
+    "When clicking 'Execute workflow'": {
+      "main": [
+        [
+          {
+            "node": "Set Search Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Search Params": {
+      "main": [
+        [
+          {
+            "node": "Serper Places",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Serper Places": {
+      "main": [
+        [
+          {
+            "node": "Split Out Places",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out Places": {
+      "main": [
+        [
+          {
+            "node": "Normalize Place",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Place": {
+      "main": [
+        [
+          {
+            "node": "Fetch Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Website": {
+      "main": [
+        [
+          {
+            "node": "Fetch Contact Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Contact Page": {
+      "main": [
+        [
+          {
+            "node": "Extract Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Contacts": {
+      "main": [
+        [
+          {
+            "node": "SORA Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SORA Config": {
+      "main": [
+        [
+          {
+            "node": "Build SORA Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build SORA Payload": {
+      "main": [
+        [
+          {
+            "node": "Send to SORA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  }
+}

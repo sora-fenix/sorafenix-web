@@ -8,9 +8,96 @@ file is the n8n side of that contract.
 
 ---
 
+## Running n8n locally (Docker)
+
+The workflow is a repo artefact: `n8n/workflows/sora-lead-hunter.json`. The
+instance that runs it is `docker-compose.n8n.yml`. Both are committed, because
+the first copy of this workflow existed only inside one laptop's Docker volume
+and died with the laptop.
+
+```
+pnpm campaign:create      # once — prints the SORA_CAMPAIGN_ID for .env.local
+pnpm n8n:start            # http://localhost:5678
+pnpm n8n:logs
+pnpm n8n:stop
+```
+
+Two steps are manual, once per machine:
+
+1. **Create the owner account** n8n asks for on first boot. It is local-only.
+2. **Import the workflow** (Workflows → Import from File →
+   `n8n/workflows/sora-lead-hunter.json`), then give `Serper Places` a
+   **Header Auth** credential named `Serper API Key` — Name `X-API-KEY`, Value
+   your Serper key. The key is encrypted into the n8n volume with
+   `N8N_ENCRYPTION_KEY`; it never enters the repo.
+
+### Which workspace the leads land in
+
+`pnpm campaign:create` with no arguments picks the only workspace that exists on
+a fresh machine — `maju-bersama`, the one `scripts/seed.ts` owns and **deletes
+and rebuilds on every run**. Leads imported there disappear at the next
+`pnpm test:integration`, `pnpm db:seed` or `pnpm db:reset`, without an error.
+
+For leads worth keeping, give them their own workspace first: sign in at
+`/login` with an email that has no membership (the magic link lands in Inbucket
+at http://127.0.0.1:54324), let provisioning create the workspace, then
+
+```
+pnpm campaign:create --workspace <new-slug>
+```
+
+and put that id in `SORA_CAMPAIGN_ID`. The seed never touches any workspace but
+its own.
+
+### Where the secrets live
+
+`pnpm n8n:start` runs compose with `--env-file .env.local`, so the container
+signs with the same `N8N_WEBHOOK_SECRET` the app verifies with. One value, one
+file. A second copy would drift, and a drifted secret is indistinguishable from
+a malformed request: 401 `invalid_signature`, forever.
+
+The container receives `SORA_WEBHOOK_SECRET`, `SORA_CAMPAIGN_ID` and
+`SORA_WEBHOOK_URL`. Nothing sensitive is stored in the workflow JSON, which is
+what makes committing it safe.
+
+### `$env` reaches expressions, not the Code node
+
+Self-hosted n8n sets `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, so `$env` works —
+**but only in the main process.** Code nodes execute in a separate task runner
+that is handed a filtered environment. Verified on 2.36.9:
+
+```
+main process (pid 7)   SORA_WEBHOOK_SECRET, SORA_CAMPAIGN_ID, SORA_WEBHOOK_URL, N8N_BLOCK_ENV_ACCESS_IN_NODE
+task runner (pid 19)   NODE_FUNCTION_ALLOW_BUILTIN=crypto, N8N_RUNNERS_* — and nothing else
+```
+
+That is why `SORA Config` is a **Set** node and not a line of code: its
+expressions are evaluated by the main process, which can see the variables. A
+Code node reading `$env.SORA_WEBHOOK_SECRET` would silently get `undefined`, sign
+with an empty key, and fail with a 401 that looks like a wrong secret.
+`NODE_FUNCTION_ALLOW_BUILTIN=crypto` is set on the container and does reach the
+runner, so `require('crypto')` in `Build SORA Payload` works.
+
+### Reaching the app
+
+`docker-compose.n8n.yml` adds `host.docker.internal:host-gateway`, so the
+container reaches `pnpm dev` on the host directly:
+
+```
+docker exec sora_n8n sh -c "wget -qO- http://host.docker.internal:3000/api/health"
+{"ok":true,"service":"sora"}
+```
+
+**No tunnel is involved.** `cloudflared` is only needed when n8n runs somewhere
+outside the machine — see *Reaching a local machine from n8n Cloud* below.
+
+---
+
 ## What changes in the workflow
 
-Replace the **Append to Sheet** node with three nodes:
+This is what was done to the original lead-hunter export, and what
+`n8n/workflows/sora-lead-hunter.json` already contains. Replace the
+**Append to Sheet** node with three nodes:
 
 ```
 Extract Contacts → SORA Config (Set) → Build SORA Payload (Code) → Send to SORA (HTTP Request)
@@ -37,16 +124,20 @@ Type: Set · Mode: Manual Mapping · **Include Other Input Fields: on**
 
 Two string fields:
 
-| Name | Value |
-|---|---|
-| `webhook_secret` | the value of `N8N_WEBHOOK_SECRET` from SORA's `.env.local` |
-| `campaign_id` | the UUID of the campaign these leads belong to |
+| Name | Value (local Docker) | Value (n8n Cloud) |
+|---|---|---|
+| `webhook_secret` | `={{ $env.SORA_WEBHOOK_SECRET }}` | the literal `N8N_WEBHOOK_SECRET` from `.env.local` |
+| `campaign_id` | `={{ $env.SORA_CAMPAIGN_ID }}` | the literal campaign UUID |
 
-**Do not use `$env` here.** On n8n Cloud, `N8N_BLOCK_ENV_ACCESS_IN_NODE` defaults
-to `true` and there is no way to turn it off — a Code node reading
-`$env.SORA_WEBHOOK_SECRET` fails with `access to env vars denied`. Self-hosted can
-set that variable to `false`, but a Set node works on every deployment, so this is
-the one path documented here.
+**The `$env` column only works self-hosted.** On n8n Cloud,
+`N8N_BLOCK_ENV_ACCESS_IN_NODE` defaults to `true` and there is no way to turn it
+off — the expression fails with `access to env vars denied`, so paste literals
+there instead. Either way the values arrive through this Set node, and the Code
+node below never changes.
+
+**Never put `$env` in the Code node itself**, on any deployment. Code nodes run
+in a task runner with a filtered environment — see *`$env` reaches expressions,
+not the Code node* above.
 
 On a plan that has n8n Variables, `$vars.SORA_WEBHOOK_SECRET` is a better home for
 the secret than a field on the canvas. The Code node below reads the Set node, so
@@ -159,18 +250,25 @@ Type: HTTP Request
 | Setting | Value |
 |---|---|
 | Method | `POST` |
-| URL | `https://<your-host>/api/webhooks/n8n/leads` |
+| URL | `={{ $env.SORA_WEBHOOK_URL }}` — Cloud: `https://<your-host>/api/webhooks/n8n/leads` |
 | Send Headers | on — `x-sora-signature` = `={{ $json.signature }}` |
-| | and `Content-Type` = `application/json` |
 | Send Body | on |
 | Body Content Type | **Raw** |
+| Raw Content Type | `application/json` |
 | Body | `={{ $json.body }}` |
 
 **Body Content Type must be Raw.** Choosing JSON here hands n8n an object to
 re-serialise, and the signature stops matching. This is the single most common
 way this integration breaks.
 
-### Reaching a local machine
+`Content-Type` is not added as a header by hand: *Raw Content Type* already sets
+it, and setting both risks sending it twice. The route reads the raw body
+regardless of what the header says — it verifies bytes, then parses.
+
+### Reaching a local machine from n8n Cloud
+
+Not needed when n8n runs in Docker on the same machine — see *Running n8n locally*
+above, which uses `host.docker.internal`. This section is for n8n Cloud only.
 
 `http://localhost:3000` is not reachable from n8n Cloud. During development, put
 a tunnel in front of it:

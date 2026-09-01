@@ -2,7 +2,7 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-08-28 (sixth pass: workspace provisioning)
+**Last updated:** 2026-09-01 (seventh pass: n8n rebuilt locally, in Docker)
 **Phase:** 2 in progress — Module 1, lead ingestion. Slice 3a (webhook + dedupe)
 and workspace provisioning are done and green; 3b (CSV upload) and 3c (enrichment
 worker) are next.
@@ -386,10 +386,76 @@ whitelisted in the Code node on n8n Cloud, so that half of the document stood.
 
 ### Still to be done by hand, in the n8n UI
 
-The three nodes are specified and the payload contract is proved, but the workflow
-itself has not been edited. Remaining: add the `SORA Config` Set node, replace
-`Append to Sheet` with the Code + HTTP pair, and add `maps_cid` to what
-`Extract Contacts` pushes so `source_url` has a value.
+~~The three nodes are specified and the payload contract is proved, but the
+workflow itself has not been edited.~~ **Done 2026-09-01** — see below. The
+edits now live in `n8n/workflows/sora-lead-hunter.json`.
+
+---
+
+## n8n rebuilt locally, in Docker (2026-09-01)
+
+The laptop running n8n died. Nothing in the app was lost — but the workflow was,
+because it existed only inside that machine's Docker volume. That is the finding
+worth keeping: **an integration that lives in one person's container is not
+integrated with anything.** The workflow is now a repo artefact.
+
+### What was built
+
+| File | Why |
+|---|---|
+| `docker-compose.n8n.yml` | n8n 2.36.9, own volume, own SQLite. Started with `--env-file .env.local` so the signing secret cannot drift from the verifying one. |
+| `n8n/workflows/sora-lead-hunter.json` | The workflow, patched and committed. No secrets in it. |
+| `scripts/create-campaign.ts` | `pnpm campaign:create` — the webhook resolves a workspace from `campaign_id`, so ingestion is impossible until a campaign exists. |
+| `package.json` | `n8n:start`, `n8n:stop`, `n8n:logs`, `campaign:create`. |
+
+The workflow changes are the three that were outstanding: `maps_cid` now survives
+`Extract Contacts`, `Append to Sheet` is gone, and `SORA Config →
+Build SORA Payload → Send to SORA` is the new tail.
+
+### The task runner filters the environment — verified, not assumed
+
+Self-hosted n8n can set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, which suggests a
+Code node could read the secret from `$env` directly and skip the Set node. It
+cannot. Code nodes run in a separate task runner process, and n8n hands it a
+filtered environment:
+
+```
+main process (pid 7)   SORA_WEBHOOK_SECRET, SORA_CAMPAIGN_ID, SORA_WEBHOOK_URL, N8N_BLOCK_ENV_ACCESS_IN_NODE
+task runner (pid 19)   NODE_FUNCTION_ALLOW_BUILTIN=crypto, N8N_RUNNERS_* — nothing else
+```
+
+Read out of `/proc/<pid>/environ` in the running container. So `SORA Config`
+stays a Set node — its expressions evaluate in the main process, which can see
+the variables — and decision 26 survives for a second, better reason than the one
+it was written for. A Code node reading `$env` would have signed with `undefined`
+and produced a 401 that reads exactly like a wrong secret.
+
+`NODE_FUNCTION_ALLOW_BUILTIN=crypto` *does* reach the runner, so
+`require('crypto')` in `Build SORA Payload` works.
+
+### Proved end to end, before touching the UI
+
+From inside the container, against `pnpm dev` on the host over
+`host.docker.internal` — no tunnel:
+
+```
+correct signature  → 200 {"accepted":1,"inserted":0,"duplicates":0,
+                          "rejected":[{"index":0,"reason":"no_contact_channel"}],"replayed":false}
+sha256=000…000     → 401 {"error":"invalid_signature"}
+```
+
+The probe item deliberately carries no contact channel, so the whole chain —
+container → host → HMAC → campaign lookup → ingest — is exercised without
+writing a fake company into real data.
+
+Gate after the change: `typecheck` clean, `lint` clean, `test` 129/129.
+
+### Left for the owner, in the n8n UI
+
+Two steps, once: create the local owner account at http://localhost:5678, then
+import the workflow and attach a Header Auth credential (`X-API-KEY` = the Serper
+key) to `Serper Places`. The key is encrypted into the volume by
+`N8N_ENCRYPTION_KEY` and never enters the repo.
 
 ---
 
@@ -541,7 +607,13 @@ nine containers are healthy. Noted so nobody spends an afternoon on it.
 pnpm db:start            # Supabase CLI (Docker)
 pnpm db:reset            # recreate, apply 0000-0003, seed
 pnpm dev                 # sign in at /login, mail lands in Inbucket
+pnpm campaign:create     # once — prints SORA_CAMPAIGN_ID for .env.local
+pnpm n8n:start           # lead hunter at http://localhost:5678
 ```
+
+`pnpm n8n:start` needs `N8N_ENCRYPTION_KEY` and `SORA_CAMPAIGN_ID` in
+`.env.local`; compose fails with a named variable if either is missing. Full
+setup in `docs/n8n-integration.md`.
 
 ---
 
@@ -585,6 +657,16 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
    `campaign_id`. Until then, treat anything imported into `maju-bersama` as
    disposable.
 
+   **Still open, and now load-bearing (2026-09-01).** `pnpm campaign:create`
+   supplies the missing half — but run with no arguments on this machine it
+   picks `maju-bersama`, the one workspace that exists, which is precisely the
+   workspace the seed destroys. Real n8n leads landing there survive until the
+   next `pnpm test:integration`, `pnpm db:seed` or `pnpm db:reset`, and then
+   vanish silently. The way out needs no new code: sign in at `/login` with an
+   email that has no membership, let provisioning create a second workspace, then
+   `pnpm campaign:create --workspace <new-slug>` and put that id in
+   `SORA_CAMPAIGN_ID`. The seed only ever deletes `maju-bersama`.
+
 ---
 
 ## Decisions
@@ -621,6 +703,8 @@ pnpm dev                 # sign in at /login, mail lands in Inbucket
 | 28 | The create-workspace form lives on `/app`, not `/app/new` | A literal segment under `/app` is resolved by Next.js before the `[workspace]` dynamic one, so `/app/new` would make any workspace slugged `new` permanently unreachable — the exact collision `.claude/rules/structure.md` exists to prevent. `/app` already redirects anyone who has a workspace, so the form is only reachable by someone with none. `slug.ts` reserves the word anyway, belt and braces. |
 | 29 | `slugifyWorkspaceName` delegates legal-form stripping to `normalizeCompanyName` | "PT Maju Bersama" → `maju-bersama` needs the same judgement dedupe already makes about what a company is really called. A second copy would drift from the first, which is the reasoning behind decision 23. The known limitation is inherited too: `P.T. Maju` keeps the dotted prefix, pinned by a test rather than fixed, because widening that regex would change fuzzy matching. |
 | 30 | Workspace provisioning ships without campaign creation, and therefore does not close known issue 7 | Owner decision, 2026-08-28. CLAUDE.md §4 is one vertical slice at a time. It does mean the issue stays open: the n8n webhook resolves its workspace from `campaign_id`, so a fresh workspace with no campaign cannot receive an import, and real imports still have nowhere to go but the seeded workspace. |
+| 31 | The n8n workflow and its container are committed to the repo | The previous copy lived only in one laptop's Docker volume and died with it, taking three nodes of wiring with it. A workflow that cannot be restored by `git clone` is a single point of failure wearing an integration's clothes. Secrets stay out of the JSON by reading them from the container environment, which is what makes committing it possible at all. |
+| 32 | Real leads are kept out of `maju-bersama` by convention, not by code | The seed owns that workspace and deletes it on every run (known issue 7). Teaching the seed to spare rows it did not create would cost it the determinism every count assertion depends on. So the answer is a second workspace for real imports — provisioning already creates one for a membership-less user, so it needs no new code, only the discipline to pass `--workspace` to `pnpm campaign:create`. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

@@ -1,0 +1,63 @@
+# n8n — local lead hunter, self-hosted (docs/n8n-integration.md).
+#
+#   pnpm n8n:start    →  http://localhost:5678
+#   pnpm n8n:stop
+#
+# Always started through the pnpm scripts, because they pass
+# `--env-file .env.local`: N8N_WEBHOOK_SECRET must be the SAME value the app
+# verifies with, and the only way to guarantee that is to read it from the same
+# file the app reads. A second copy of that secret drifts, and a drifted secret
+# looks exactly like a malformed request — 401 invalid_signature, every time.
+#
+# This stack is deliberately separate from Supabase (`pnpm db:start`, driven by
+# the Supabase CLI). n8n keeps its own SQLite database inside its volume and
+# never touches the application's Postgres.
+
+name: sora-n8n
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.36.9
+    container_name: sora_n8n
+    restart: unless-stopped
+    ports:
+      - '5678:5678'
+    environment:
+      # Encrypts saved credentials (the Serper API key) inside the volume.
+      # Set explicitly, not generated: a generated key lives only in the volume,
+      # so losing the volume loses every credential with no way back. With this
+      # in .env.local, a restored volume still decrypts.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env.local}
+
+      # Quiet hours and every scheduled trigger are read in the lead's own day.
+      GENERIC_TIMEZONE: Asia/Jakarta
+      TZ: Asia/Jakarta
+
+      # --- What the workflow needs from us -----------------------------------
+      # Self-hosted may read $env from nodes; n8n Cloud may not (it forces
+      # N8N_BLOCK_ENV_ACCESS_IN_NODE=true). Reading the secret from the
+      # environment is what keeps n8n/workflows/*.json free of secrets and
+      # therefore committable — the whole point of storing the workflow in git.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: 'false'
+      # `Build SORA Payload` signs the body with require('crypto').
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+
+      SORA_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:?set N8N_WEBHOOK_SECRET in .env.local}
+      SORA_CAMPAIGN_ID: ${SORA_CAMPAIGN_ID:?run `pnpm campaign:create` and put the id in .env.local}
+      # `pnpm dev` runs on the host, not in this network. No tunnel is involved:
+      # cloudflared was only ever needed because n8n Cloud sits outside the machine.
+      SORA_WEBHOOK_URL: http://host.docker.internal:3000/api/webhooks/n8n/leads
+
+      N8N_DIAGNOSTICS_ENABLED: 'false'
+      N8N_VERSION_NOTIFICATIONS_ENABLED: 'false'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      # Everything n8n owns: its SQLite database, its encrypted credentials, and
+      # the workflows as it has them right now. The committed copy in
+      # n8n/workflows/ is the source of truth — import it, and export back over
+      # it from the workflow menu after editing on the canvas.
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:
