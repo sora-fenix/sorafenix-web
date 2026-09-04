@@ -2,10 +2,11 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-01 (seventh pass: n8n rebuilt locally, in Docker)
-**Phase:** 2 in progress — Module 1, lead ingestion. Slice 3a (webhook + dedupe)
-and workspace provisioning are done and green; 3b (CSV upload) and 3c (enrichment
-worker) are next.
+**Last updated:** 2026-09-04 (eighth pass: the LLM entry point)
+**Phase:** 2 in progress. Module 1 (ingestion) is done and feeding real leads.
+`src/lib/ai/agent.ts` now exists, so the modules that need a model are unblocked.
+Slice 3b (CSV upload) is deferred — see decision 33. Module 3 (qualification) is
+next.
 
 ---
 
@@ -13,22 +14,30 @@ worker) are next.
 
 The database is real. Every domain table from `docs/SPEC.md` exists, is
 protected by RLS, and is filled by a deterministic seed, so the product can be
-demoed end to end without a single external service. All nine module screens now
-read live data — the Phase 0 placeholders are gone. No business logic (ingestion,
-scoring, generation, sending) exists yet: every screen is read-only, and nothing
-in the product can create, edit, approve, or send anything.
+demoed end to end without a single external service. All nine module screens read
+live data — the Phase 0 placeholders are gone.
+
+Ingestion is real too: leads arrive from n8n through a signed webhook, are
+deduplicated, and land in `data-riil`. The LLM entry point now exists behind them.
+What still does not exist is everything in between — nothing scores a lead,
+enriches a company, drafts a message or sends one. Inside a workspace every screen
+remains read-only; creating a workspace is still the only mutation the UI can make
+(known issue 4).
 
 | Gate | Status |
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 129 tests, 4 files |
+| `pnpm test` | ✅ 165 tests, 6 files |
 | `pnpm build` | ✅ all 18 routes built |
-| `pnpm test:integration` | ✅ 52 tests, 4 files |
+| `pnpm test:integration` | ✅ 64 tests, 5 files |
+| `pnpm ai:smoke` | ⏸️ **not run** — no `GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` yet |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
-All six gates were re-run on 2026-08-28 against the live local stack. Five are
-green; the sixth is a deliberate deferral, not a failure.
+All seven gates were re-run on 2026-09-04 against the live local stack. Five are
+green; two have not run, and both are named rather than implied. `ai:smoke` is the
+only thing that can prove the model id, the provider package and the token field
+names are right, so until it runs those three remain unverified.
 
 **The machine is unblocked.** Docker Desktop is installed and the Supabase stack
 runs locally: 10 containers, Postgres 17 healthy, migrations `0000`–`0003` applied,
@@ -537,6 +546,111 @@ key) to `Serper Places`. The key is encrypted into the volume by
 
 ---
 
+## `src/lib/ai/agent.ts` — the single LLM entry point (2026-09-04)
+
+CLAUDE.md rule 2 has said "all LLM calls go through `src/lib/ai/agent.ts`" since
+Phase 0, and the file did not exist. Everything left on the roadmap — enrichment,
+qualification, content generation, reply classification — is behind it. This slice
+is that file and nothing else.
+
+### What shipped
+
+| File | Role |
+|---|---|
+| `src/lib/ai/models.ts` | The only place a model id appears. Primary, fallback, paid-tier prices, `estimateCostUsd()`. No imports at all. |
+| `src/lib/ai/policy.ts` | The retry and escalation decisions, pure and import-free. |
+| `src/lib/ai/agent.ts` | `runAgent()` — Zod in and out, a deadline, retry with backoff, escalation to the fallback, an `ai_runs` row per attempt, returns a `Result`. |
+| `scripts/ai-smoke.ts` | `pnpm ai:smoke` — one real call, printed with the row it wrote. |
+| `tests/unit/ai-models.test.ts` | 13 cases: cost arithmetic and registry invariants. |
+| `tests/unit/agent-policy.test.ts` | 23 cases: error classification, backoff, `Retry-After`, error text. |
+| `tests/integration/agent.test.ts` | 12 cases against real Postgres with a scripted provider. |
+
+Dependencies added: `ai@7.0.91`, `@ai-sdk/google@4.0.63`, `@ai-sdk/openai@4.0.57` —
+all three pre-approved in decision 19. No schema change and no migration: `ai_runs`
+already had exactly the columns rule 2 names.
+
+### Three files, not one, and why
+
+Rule 2 names one file, and the orchestration is in it. The two next to it exist for
+a reason the rule does not cover: `agent.ts` imports `server-only` and the Drizzle
+handle, and `drizzle.ts` calls `serverEnv()` at module load — so anything importing
+`agent.ts` needs a `DATABASE_URL`, which `.claude/rules/testing.md` says the unit
+suite must live without.
+
+So the decisions with real consequences when a provider misbehaves — classify this
+error, retry or escalate, wait how long — live in `policy.ts`, which imports
+nothing and is unit-tested exhaustively. `models.ts` is the same shape for the same
+reason. Neither calls a model; `agent.ts` is still the only thing that can.
+
+### Errors are read by shape, not by class
+
+`policy.ts` matches on `statusCode`, `isRetryable` and `responseHeaders` rather
+than on `instanceof APICallError`. A wrapped, re-thrown or faked error is then
+classified exactly like the real one, which is what makes the whole failure surface
+testable without a provider. The escalation it produces:
+
+| Condition | Verdict | Next |
+|---|---|---|
+| abort / our own deadline | `timeout` | retry |
+| 429 | `rate_limited` | retry, honouring `Retry-After` over our own curve |
+| 5xx | `provider_error` | retry |
+| 400 / 401 / 403 / 404 | `provider_error` | **escalate immediately** — the same request gets the same answer |
+| answer fails the Zod schema | `invalid_output` | one more chance on the same model, then escalate |
+| no key on any model | `no_model_available` | return before any call, and write **no** `ai_runs` row |
+
+`rate_limited` is a kind of its own precisely because the free tier hits it and it
+is the one failure that answers to waiting.
+
+### One `ai_runs` row per attempt
+
+A call that fails over writes two rows: the failed primary and the successful
+fallback. A single summary row would hide the failure that made the fallback
+necessary, which is the thing worth seeing on a cost dashboard. Failed attempts
+record `tokens_in`/`tokens_out` as null and cost as zero — the SDK throws before
+reporting usage, and zero is honest where a guess is not.
+
+**The audit write is best-effort, and that is a deliberate exception to rule 10.**
+A Postgres hiccup must not discard a generation the provider was already paid for.
+The failure is logged loudly; the answer still returns.
+
+### The tests fake the provider and nothing else
+
+`tests/integration/agent.test.ts` takes `productionDeps()` and replaces only the
+provider, the clock and the sleep — so the `ai_runs` rows it asserts are written by
+the same code production runs. Retry, escalation, both retry budgets, the timeout
+and the no-key path are each driven deterministically, which no real model would
+do on request.
+
+What a fake cannot prove is that the model id exists, the provider package is wired
+right, and the SDK's usage fields are read under the right names. That is `pnpm
+ai:smoke`, and it **has not run** — see below.
+
+### Cost is recorded at the paid rate even though the key will be free
+
+`gemini-2.5-flash` has a Google AI Studio free tier — "free of charge" on both
+input and output — and that is what the project will use. `estimateCostUsd()`
+nevertheless records the published paid rates ($0.30 / $2.50 per 1M, verified
+2026-09-04; `gpt-4.1-mini` is $0.40 / $1.60). `ai_runs.cost_usd` exists to answer
+"what does this cost at volume", and a column of zeros answers nothing and would
+become quietly wrong the day the project moves to a paid key.
+
+### Not verified
+
+**No call has been made to a real model.** There is no
+`GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` yet. `pnpm ai:smoke` prints a
+message naming the free-tier URL and exits 1, which is what it does today.
+
+What *was* verified is that the script loads: `scripts/ai-smoke.ts` runs under
+`tsx --conditions=react-server`, which resolves `server-only` to its own empty
+module, and `src/lib/ai/agent.ts` imports cleanly that way. So the only thing
+standing between here and the proof is the key.
+
+The smoke script also fails loudly if the provider reports no token usage, because
+that is what a moved SDK usage field would look like — a successful call whose cost
+is silently zero.
+
+---
+
 ## Prompt 3 — ingestion + dedupe: readiness assessment (2026-08-26)
 
 Asked: can we start "Prompt 3 — Ingestion + dedupe" (SPEC §2 and §3)?
@@ -645,17 +759,25 @@ UI → test), nothing started until the previous slice is green.
    phone → email → fuzzy name+city). Tables already exist.
 3. ~~**Workspace provisioning**~~ — **done 2026-08-28.** First-workspace path only;
    no invite flow and no second-workspace entry in the switcher yet.
-4. **Slice 3b — CSV upload** into the same pipeline. ← *next.* Parser approved; XLSX dropped.
-5. **`src/lib/ai/agent.ts` + `models.ts`** — the single LLM entry point and its
-   `ai_runs` row. Prerequisite for both enrichment and qualification.
-6. **Slice 3c — enrichment worker.** pg-boss, `/api/cron/tick`, `enrich_company`,
-   plus documentation for running the worker locally.
-7. **Module 3 — qualification.** `src/lib/scoring/rubric.ts`; the model returns
+4. ~~**`src/lib/ai/agent.ts` + `models.ts`**~~ — **done 2026-09-04.** The single LLM
+   entry point, its `ai_runs` row per attempt, and `pnpm ai:smoke`. Brought forward
+   ahead of 3b; see decision 33.
+5. **Put a key in `.env.local` and run `pnpm ai:smoke`.** ← *next, and it takes two
+   minutes.* Free tier, no card: https://aistudio.google.com/apikey. Until this
+   runs, the model id and the token mapping are unproven.
+6. **Module 3 — qualification.** `src/lib/scoring/rubric.ts`; the model returns
    per-factor sub-scores only and code computes the weighted total. The seed
-   already writes rows in that shape.
-8. **Module 5 + approvals** — content generation with `needs_input` gating.
-9. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
-   there is never a code path that sends without it.
+   already writes rows in that shape, and `data-riil` has real leads with no score.
+   This is where `src/lib/ai/prompts/` and `src/lib/ai/schemas/` get their first
+   files.
+7. **Slice 3c — enrichment worker.** pg-boss, `/api/cron/tick`, `enrich_company`.
+   Worth reshaping first: SPEC §3 fetches websites, and every company scraped so
+   far has none. The enrichment data for this segment is already in
+   `companies.raw` — rating, review count, category, `maps_cid` from Serper.
+8. **Slice 3b — CSV upload.** Deferred, not dropped. Parser approved; XLSX dropped.
+9. **Module 5 + approvals** — content generation with `needs_input` gating.
+10. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
+    there is never a code path that sends without it.
 
 ## Blocked
 
@@ -750,6 +872,14 @@ setup in `docs/n8n-integration.md`.
    `maju-bersama` exists still points real imports at the workspace the seed
    destroys. Nothing stops that but reading the flag.
 
+8. **The Google free tier is not a production data path.** Google uses free-tier
+   API data to improve its products; the paid tier does not. Acceptable while the
+   prompts contain nothing but business names scraped from Google Maps. **Not**
+   acceptable once a real customer's data is in a prompt, which happens at Module 5
+   (content generation reads `knowledge_docs` and thread history). Moving to a paid
+   key — or an equivalent no-training arrangement — is a launch blocker for that
+   module, not a nice-to-have. Nothing in code enforces this today.
+
 ---
 
 ## Decisions
@@ -788,6 +918,11 @@ setup in `docs/n8n-integration.md`.
 | 30 | Workspace provisioning ships without campaign creation, and therefore does not close known issue 7 | Owner decision, 2026-08-28. CLAUDE.md §4 is one vertical slice at a time. It does mean the issue stays open: the n8n webhook resolves its workspace from `campaign_id`, so a fresh workspace with no campaign cannot receive an import, and real imports still have nowhere to go but the seeded workspace. |
 | 31 | The n8n workflow and its container are committed to the repo | The previous copy lived only in one laptop's Docker volume and died with it, taking three nodes of wiring with it. A workflow that cannot be restored by `git clone` is a single point of failure wearing an integration's clothes. Secrets stay out of the JSON by reading them from the container environment, which is what makes committing it possible at all. |
 | 32 | Real leads are kept out of `maju-bersama` by convention, not by code | The seed owns that workspace and deletes it on every run (known issue 7). Teaching the seed to spare rows it did not create would cost it the determinism every count assertion depends on. So the answer is a second workspace for real imports — provisioning already creates one for a membership-less user, so it needs no new code, only the discipline to pass `--workspace` to `pnpm campaign:create`. |
+| 33 | `agent.ts` was brought forward ahead of slice 3b (CSV upload) | Owner decision, 2026-09-04. Ingestion already works and is feeding real leads; CSV would be a second door into a pipeline whose far end is still closed. Nothing downstream — enrichment, scoring, generation — can start without the LLM entry point, so it is the change that unblocks the most. 3b keeps its approved parser and its place in the queue. |
+| 34 | The retry and escalation decisions live in `policy.ts`, not inside `agent.ts` | `agent.ts` must import `server-only` and the Drizzle handle, and `drizzle.ts` reads `DATABASE_URL` at module load — so the unit suite cannot import it without the database URL `.claude/rules/testing.md` says it must live without. The branches with real money and real latency behind them belong where they can be tested exhaustively for free. `policy.ts` calls no model, so rule 2 is intact. Same reasoning as decision 24. |
+| 35 | Failures are classified by error *shape*, not by `instanceof` | The AI SDK's `APICallError` carries `statusCode`, `isRetryable` and `responseHeaders`; matching on those means a wrapped, re-thrown or scripted error is classified identically to a real one. That is what makes every failure path testable without a provider — and a provider will not produce a 429 on request. |
+| 36 | The `ai_runs` write is best-effort, a deliberate exception to rule 10 | A Postgres hiccup must not discard a generation the provider was already paid for. The row is the record of a call, not the product of one; losing it is strictly better than losing the answer. Logged loudly so a systematic failure is visible rather than silent. |
+| 37 | `ai_runs.cost_usd` records the paid-tier rate even on a free-tier key | The column exists to answer "what does this cost at volume". Recording the free tier's zero answers nothing and becomes quietly wrong the day the key changes, with no signal that it did. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
