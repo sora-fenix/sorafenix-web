@@ -184,8 +184,8 @@ describe('the happy path', () => {
     expect(result.value.model).toBe(PRIMARY_MODEL)
     expect(result.value.tokensIn).toBe(1200)
     expect(result.value.tokensOut).toBe(300)
-    // 1200 in at $0.30/1M + 300 out at $2.50/1M.
-    expect(result.value.costUsd).toBe(0.00111)
+    // 1200 in at $0.75/1M + 300 out at $3.75/1M.
+    expect(result.value.costUsd).toBe(0.002025)
     expect(result.value.attempts).toHaveLength(1)
 
     expect(calls).toHaveLength(1)
@@ -199,7 +199,7 @@ describe('the happy path', () => {
       model: PRIMARY_MODEL,
       tokens_in: 1200,
       tokens_out: 300,
-      cost_usd: '0.001110',
+      cost_usd: '0.002025',
       ok: true,
       error: null,
     })

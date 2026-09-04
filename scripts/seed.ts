@@ -889,7 +889,7 @@ async function main(): Promise<void> {
           id: id.aiRun(i),
           workspaceId: id.workspace,
           agent: agents[i % agents.length] ?? 'qualify',
-          model: i % 5 === 4 ? 'gpt-4.1-mini' : 'gemini-2.5-flash',
+          model: i % 5 === 4 ? 'gpt-4.1-mini' : 'gemini-3.7-flash',
           tokensIn: intBetween(rng, 400, 3200),
           tokensOut: intBetween(rng, 80, 900),
           costUsd: (intBetween(rng, 20, 900) / 100000).toFixed(6),

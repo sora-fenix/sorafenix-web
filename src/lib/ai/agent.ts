@@ -92,7 +92,21 @@ export type AgentError = {
   readonly attempts: readonly AgentAttempt[]
 }
 
-export const DEFAULT_TIMEOUT_MS = 30_000
+/**
+ * 60s, not the 30s this shipped with.
+ *
+ * Measured, not guessed: three real `pnpm ai:smoke` calls on 2026-09-04 returned
+ * in 24.6s, 5.3s and 22.2s for a two-field answer. `gemini-3.7-flash` spends
+ * output tokens thinking — 131, 289 and 232 of them for that same answer — and the
+ * time that takes is wildly variable. A 30s deadline would have turned a normal
+ * call into a `timeout` roughly whenever the model felt thorough.
+ *
+ * The other lever is `providerOptions.google.thinkingConfig.thinkingBudget`, which
+ * would cut both the latency and the cost. It is deliberately not pulled here:
+ * how much reasoning a lead score deserves is Module 3's decision, not the
+ * transport's.
+ */
+export const DEFAULT_TIMEOUT_MS = 60_000
 export const DEFAULT_MAX_RETRIES = 2
 
 /**

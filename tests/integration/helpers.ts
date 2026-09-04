@@ -125,7 +125,7 @@ export async function createWorkspaceFixture(
   await sql`insert into suppressions (workspace_id, kind, value)
             values (${workspaceId}, 'email', ${`stop-${tag}@example.test`})`
   await sql`insert into ai_runs (workspace_id, agent, model, ok)
-            values (${workspaceId}, 'qualify', 'gemini-2.5-flash', true)`
+            values (${workspaceId}, 'qualify', 'gemini-3.7-flash', true)`
   await sql`insert into webhook_events (workspace_id, provider, idempotency_key)
             values (${workspaceId}, 'n8n', ${`rls-${tag}-key`})`
 

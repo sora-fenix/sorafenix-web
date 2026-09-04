@@ -31,13 +31,11 @@ remains read-only; creating a workspace is still the only mutation the UI can ma
 | `pnpm test` | ✅ 165 tests, 6 files |
 | `pnpm build` | ✅ all 18 routes built |
 | `pnpm test:integration` | ✅ 64 tests, 5 files |
-| `pnpm ai:smoke` | ⏸️ **not run** — no `GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` yet |
+| `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
-All seven gates were re-run on 2026-09-04 against the live local stack. Five are
-green; two have not run, and both are named rather than implied. `ai:smoke` is the
-only thing that can prove the model id, the provider package and the token field
-names are right, so until it runs those three remain unverified.
+All seven gates were run on 2026-09-04 against the live local stack. Six are
+green; the seventh is a deliberate deferral, not a failure.
 
 **The machine is unblocked.** Docker Desktop is installed and the Supabase stack
 runs locally: 10 containers, Postgres 17 healthy, migrations `0000`–`0003` applied,
@@ -625,29 +623,91 @@ What a fake cannot prove is that the model id exists, the provider package is wi
 right, and the SDK's usage fields are read under the right names. That is `pnpm
 ai:smoke`, and it **has not run** — see below.
 
-### Cost is recorded at the paid rate even though the key will be free
+### Cost is recorded at the paid rate even though the key is free
 
-`gemini-2.5-flash` has a Google AI Studio free tier — "free of charge" on both
-input and output — and that is what the project will use. `estimateCostUsd()`
-nevertheless records the published paid rates ($0.30 / $2.50 per 1M, verified
-2026-09-04; `gpt-4.1-mini` is $0.40 / $1.60). `ai_runs.cost_usd` exists to answer
-"what does this cost at volume", and a column of zeros answers nothing and would
-become quietly wrong the day the project moves to a paid key.
+`gemini-3.7-flash` has a Google AI Studio free tier and that is the key in use.
+`estimateCostUsd()` nevertheless records the published paid rates ($0.75 / $3.75
+per 1M, verified 2026-09-04; `gpt-4.1-mini` is $0.40 / $1.60). `ai_runs.cost_usd`
+exists to answer "what does this cost at volume", and a column of zeros answers
+nothing and would become quietly wrong the day the project moves to a paid key.
 
-### Not verified
+Google's flash rate **doubles on 2027-01-01** — $1.50 / $7.50. Not modelled as a
+date-dependent rate; it is one line in `models.ts` to edit, and an estimate that
+changes shape at midnight is harder to reason about than one that does not.
 
-**No call has been made to a real model.** There is no
-`GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` yet. `pnpm ai:smoke` prints a
-message naming the free-tier URL and exits 1, which is what it does today.
+### The smoke test earned its keep on the first run: the primary model was dead
 
-What *was* verified is that the script loads: `scripts/ai-smoke.ts` runs under
-`tsx --conditions=react-server`, which resolves `server-only` to its own empty
-module, and `src/lib/ai/agent.ts` imports cleanly that way. So the only thing
-standing between here and the proof is the key.
+`gemini-2.5-flash` — pinned in CLAUDE.md §1 since Phase 0 — is **no longer
+available to new API keys.** The first real call said so:
 
-The smoke script also fails loudly if the provider reports no token usage, because
-that is what a moved SDK usage field would look like — a successful call whose cost
-is silently zero.
+```
+FAILED  provider_error
+  AI_APICallError: This model models/gemini-2.5-flash is no longer available to
+  new users. Please update your code to use models/gemini-3.6-flash …
+```
+
+Nothing in the repository had changed. A model id can die on the provider's
+schedule, and only a real call finds out. Two things were validated by the failure
+itself: the 404 was classified non-retryable, so it made exactly **one** attempt
+and no backoff, and it stopped instead of escalating because no `OPENAI_API_KEY`
+is set — both correct.
+
+### Choosing the replacement, by probe rather than by documentation
+
+`ListModels` still lists `gemini-2.5-flash`, so the listing is not authoritative
+about what a key can actually call. Every candidate was probed directly:
+
+| Model | `generateContent` | Free tier | Paid rate, to 2026-12-31 |
+|---|---|---|---|
+| `gemini-2.5-flash` | **404** — closed to new keys | — | — |
+| `gemini-3.5-flash` | 200 | yes | $1.50 / $9.00 |
+| `gemini-3.6-flash` | 200 | yes | $0.75 / $3.75 |
+| `gemini-3.7-flash` | 200 | yes | $0.75 / $3.75 |
+| `gemini-3.8-flash` | 200 | yes | $0.75 / $3.75 |
+
+The owner first picked `gemini-3.8-flash` — newest in the cheapest band. **That
+choice was reversed on evidence.** Under load it served 6 of 8 calls, the other two
+returning 503 UNAVAILABLE; `gemini-3.7-flash` served 8 of 8 at the identical price.
+A newest model that fails a quarter of its calls costs every lead two backoffs, and
+with no OpenAI key there is no fallback to catch them. Primary is
+**`gemini-3.7-flash`**.
+
+The retry policy was validated a second time here too: the 503s were classified
+retryable, and the smoke run made three attempts before giving up.
+
+### Proved end to end
+
+```
+OK
+  model      gemini-3.7-flash
+  answer     {"sentiment":"positif","confidence":0.99}
+  tokens     in 40 / out 131
+  cost       $0.000521 (paid-tier rate; free tier bills nothing)
+  latency    24579ms
+  attempts   1
+
+ai_runs row written:
+{ agent: 'classify_reply', model: 'gemini-3.7-flash', tokens_in: 40,
+  tokens_out: 131, cost_usd: '0.000521', latency_ms: 24579, ok: true }
+```
+
+Non-null token counts are the point of that output: they are what proves the SDK's
+usage fields are being read under the right names. A moved field would have looked
+like a successful call costing exactly nothing, and the script fails loudly on
+that rather than printing a zero.
+
+### The default timeout was wrong, and measurement said so
+
+Three consecutive smoke calls returned in **24.6s, 5.3s and 22.2s** — for a
+two-field answer. The model spends output tokens thinking (131, 289 and 232 of
+them for that same answer), and how long that takes varies wildly.
+`DEFAULT_TIMEOUT_MS` shipped at 30s, which would have turned an ordinary call into
+a `timeout` whenever the model felt thorough. It is 60s now.
+
+The other lever is `providerOptions.google.thinkingConfig.thinkingBudget`, which
+would cut both the latency and the cost. Deliberately not pulled here: how much
+reasoning a lead score deserves is Module 3's decision, not the transport's. It is
+the first thing to try if scoring 14 leads turns out to take five minutes.
 
 ---
 
@@ -762,10 +822,10 @@ UI → test), nothing started until the previous slice is green.
 4. ~~**`src/lib/ai/agent.ts` + `models.ts`**~~ — **done 2026-09-04.** The single LLM
    entry point, its `ai_runs` row per attempt, and `pnpm ai:smoke`. Brought forward
    ahead of 3b; see decision 33.
-5. **Put a key in `.env.local` and run `pnpm ai:smoke`.** ← *next, and it takes two
-   minutes.* Free tier, no card: https://aistudio.google.com/apikey. Until this
-   runs, the model id and the token mapping are unproven.
-6. **Module 3 — qualification.** `src/lib/scoring/rubric.ts`; the model returns
+5. ~~**Put a key in `.env.local` and run `pnpm ai:smoke`**~~ — **done 2026-09-04.**
+   Free-tier Google key, real call, `ai_runs` row written. It cost the primary
+   model its life; see above.
+6. **Module 3 — qualification.** ← *next.* `src/lib/scoring/rubric.ts`; the model returns
    per-factor sub-scores only and code computes the weighted total. The seed
    already writes rows in that shape, and `data-riil` has real leads with no score.
    This is where `src/lib/ai/prompts/` and `src/lib/ai/schemas/` get their first
@@ -880,6 +940,15 @@ setup in `docs/n8n-integration.md`.
    key — or an equivalent no-training arrangement — is a launch blocker for that
    module, not a nice-to-have. Nothing in code enforces this today.
 
+9. **A model call takes 5–25 seconds, and the variance is the problem.** Measured
+   on `gemini-3.7-flash` for a two-field answer: 24.6s, 5.3s, 22.2s, with 131–289
+   output tokens spent thinking. Scoring the 14 leads in `data-riil` one at a time
+   would therefore take somewhere between one and six minutes, which is fine for a
+   background job and unusable for a request-response UI. Module 3 must run through
+   a queue, not a button that waits. Capping
+   `providerOptions.google.thinkingConfig.thinkingBudget` is the first lever to try
+   and would cut cost at the same time.
+
 ---
 
 ## Decisions
@@ -923,6 +992,8 @@ setup in `docs/n8n-integration.md`.
 | 35 | Failures are classified by error *shape*, not by `instanceof` | The AI SDK's `APICallError` carries `statusCode`, `isRetryable` and `responseHeaders`; matching on those means a wrapped, re-thrown or scripted error is classified identically to a real one. That is what makes every failure path testable without a provider — and a provider will not produce a 429 on request. |
 | 36 | The `ai_runs` write is best-effort, a deliberate exception to rule 10 | A Postgres hiccup must not discard a generation the provider was already paid for. The row is the record of a call, not the product of one; losing it is strictly better than losing the answer. Logged loudly so a systematic failure is visible rather than silent. |
 | 37 | `ai_runs.cost_usd` records the paid-tier rate even on a free-tier key | The column exists to answer "what does this cost at volume". Recording the free tier's zero answers nothing and becomes quietly wrong the day the key changes, with no signal that it did. |
+| 38 | The primary model is **`gemini-3.7-flash`**, replacing `gemini-2.5-flash` | Owner decision, 2026-09-04, forced rather than chosen: Google closed 2.5-flash to new API keys and the first real call returned 404. Candidates were probed directly, because `ListModels` still lists the dead one. `3.8-flash` was picked first and reversed on evidence — it returned 503 on 2 of 8 calls where `3.7-flash` returned 8 of 8, at the same price and the same free tier. A moving alias like `gemini-flash-latest` was rejected outright: SPEC §4 wants scores comparable over time, and a model that changes without a diff makes that impossible. |
+| 39 | `DEFAULT_TIMEOUT_MS` is 60s, not 30s | Measured, not guessed. Three real calls for a two-field answer took 24.6s, 5.3s and 22.2s, because `gemini-3.7-flash` spends output tokens thinking and how long that takes varies wildly. 30s would have manufactured `timeout` failures out of ordinary calls. Capping the thinking budget is the other lever and belongs to Module 3, which is the module that knows how much reasoning a score is worth. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

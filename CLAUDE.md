@@ -17,7 +17,7 @@ Read both before starting any task.
 | DB / Auth / Storage | Supabase (Postgres + Auth + Storage + RLS) |
 | ORM & migrations | Drizzle ORM, migrations committed in `/drizzle` |
 | Validation | Zod at every boundary |
-| LLM | Vercel AI SDK. Primary `gemini-2.5-flash`, fallback `gpt-4.1-mini` |
+| LLM | Vercel AI SDK. Primary `gemini-3.7-flash`, fallback `gpt-4.1-mini` |
 | Background jobs | `pg-boss` on the same Postgres. No Redis, no external queue in MVP |
 | Email / WhatsApp | Gmail API (OAuth per workspace) / WhatsApp Cloud API |
 | Lead scraping | n8n stays external, talks to us via one signed webhook |

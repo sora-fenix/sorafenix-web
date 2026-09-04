@@ -7,9 +7,14 @@
  * Nothing here imports anything. It is a table of facts plus the arithmetic over
  * it, so the unit suite can assert every number without a provider, a key or a
  * database.
+ *
+ * The primary was `gemini-2.5-flash` until 2026-09-04, when the first real call
+ * came back 404: "no longer available to new users". A model id can die without a
+ * deprecation window and without anything in this repository changing, which is
+ * why `pnpm ai:smoke` exists and why nothing here is inferred from documentation.
  */
 
-export const PRIMARY_MODEL = 'gemini-2.5-flash'
+export const PRIMARY_MODEL = 'gemini-3.7-flash'
 export const FALLBACK_MODEL = 'gpt-4.1-mini'
 
 export const MODEL_IDS = [PRIMARY_MODEL, FALLBACK_MODEL] as const
@@ -42,14 +47,18 @@ export type ModelSpec = {
  * zeros answers nothing, and would become quietly wrong the day the project moves
  * to a paid key. Verified against the provider pricing pages on 2026-09-04; they
  * change without warning, and this is the one file to correct when they do.
+ *
+ * **Google's flash rate doubles on 2027-01-01** — $0.75/$3.75 becomes $1.50/$7.50.
+ * Deliberately not modelled as a date-dependent rate: a cost estimate that changes
+ * shape at midnight is harder to reason about than one line to edit. Edit it.
  */
 export const MODELS: Readonly<Record<ModelId, ModelSpec>> = {
-  'gemini-2.5-flash': {
-    id: 'gemini-2.5-flash',
+  'gemini-3.7-flash': {
+    id: 'gemini-3.7-flash',
     provider: 'google',
     apiKeyVar: 'GOOGLE_GENERATIVE_AI_API_KEY',
-    inputUsdPerMillion: 0.3,
-    outputUsdPerMillion: 2.5,
+    inputUsdPerMillion: 0.75,
+    outputUsdPerMillion: 3.75,
   },
   'gpt-4.1-mini': {
     id: 'gpt-4.1-mini',

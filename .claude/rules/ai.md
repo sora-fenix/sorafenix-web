@@ -12,7 +12,7 @@ row written to `ai_runs` (agent, model, tokens, cost, latency, ok/error). If you
 need a new behaviour, extend `agent.ts`; do not route around it.
 
 Model IDs live in `src/lib/ai/models.ts` and nowhere else. Primary
-`gemini-2.5-flash`, fallback `gpt-4.1-mini`. Changing a model ID is a stack change
+`gemini-3.7-flash`, fallback `gpt-4.1-mini`. Changing a model ID is a stack change
 — ask the owner first.
 
 ## The AI must never invent facts
