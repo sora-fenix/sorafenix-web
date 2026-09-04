@@ -20,6 +20,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed.ts",
+    "ai:smoke": "tsx --conditions=react-server scripts/ai-smoke.ts",
     "workspace:create": "tsx scripts/create-workspace.ts",
     "campaign:create": "tsx scripts/create-campaign.ts",
     "n8n:start": "docker compose --env-file .env.local -f docker-compose.n8n.yml up -d",
@@ -27,8 +28,11 @@
     "n8n:logs": "docker compose --env-file .env.local -f docker-compose.n8n.yml logs -f n8n"
   },
   "dependencies": {
+    "@ai-sdk/google": "^4.0.63",
+    "@ai-sdk/openai": "^4.0.57",
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.112.3",
+    "ai": "^7.0.91",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
