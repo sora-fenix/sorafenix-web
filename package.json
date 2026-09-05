@@ -21,8 +21,10 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed.ts",
     "ai:smoke": "tsx --conditions=react-server scripts/ai-smoke.ts",
+    "score:leads": "tsx --conditions=react-server scripts/score-leads.ts",
     "workspace:create": "tsx scripts/create-workspace.ts",
     "campaign:create": "tsx scripts/create-campaign.ts",
+    "product:create": "tsx scripts/create-product.ts",
     "n8n:start": "docker compose --env-file .env.local -f docker-compose.n8n.yml up -d",
     "n8n:stop": "docker compose --env-file .env.local -f docker-compose.n8n.yml down",
     "n8n:logs": "docker compose --env-file .env.local -f docker-compose.n8n.yml logs -f n8n"

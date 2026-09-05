@@ -243,15 +243,15 @@ export const POSITIONS = [
 // Lead scoring copy
 // -----------------------------------------------------------------------------
 
-/** The six factors and weights from docs/SPEC.md §4. Must sum to 100. */
-export const SCORE_FACTORS = [
-  { key: 'industry_fit', label: 'Kesesuaian industri', weight: 25 },
-  { key: 'product_need', label: 'Kebutuhan produk', weight: 25 },
-  { key: 'company_size', label: 'Ukuran perusahaan', weight: 15 },
-  { key: 'decision_maker', label: 'Ketersediaan pengambil keputusan', weight: 15 },
-  { key: 'location', label: 'Lokasi', weight: 10 },
-  { key: 'digital_signals', label: 'Sinyal digital / bisnis', weight: 10 },
-] as const
+/**
+ * The six factors and weights from docs/SPEC.md §4.
+ *
+ * Re-exported, not defined. `lib/scoring/rubric.ts` owns them, because the seed and
+ * the real scorer must produce `score_factors` rows that mean the same thing — the
+ * reasoning behind decision 23. Two copies of these weights would drift, and both
+ * sides would still add up to *something*, so nothing would fail loudly.
+ */
+export { SCORE_FACTORS } from '../src/lib/scoring/rubric'
 
 /** How well a given factor scored, which drives both the number and the wording. */
 export type FitLevel = 'high' | 'mid' | 'low'

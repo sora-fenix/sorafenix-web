@@ -2,11 +2,10 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-04 (eighth pass: the LLM entry point)
-**Phase:** 2 in progress. Module 1 (ingestion) is done and feeding real leads.
-`src/lib/ai/agent.ts` now exists, so the modules that need a model are unblocked.
-Slice 3b (CSV upload) is deferred — see decision 33. Module 3 (qualification) is
-next.
+**Last updated:** 2026-09-05 (ninth pass: lead qualification)
+**Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
+Module 3 now scores leads with a weighted rubric and moves them to `qualified`.
+Slice 3b (CSV upload) is still deferred — see decision 33. Enrichment (3c) is next.
 
 ---
 
@@ -17,21 +16,24 @@ protected by RLS, and is filled by a deterministic seed, so the product can be
 demoed end to end without a single external service. All nine module screens read
 live data — the Phase 0 placeholders are gone.
 
-Ingestion is real too: leads arrive from n8n through a signed webhook, are
-deduplicated, and land in `data-riil`. The LLM entry point now exists behind them.
-What still does not exist is everything in between — nothing scores a lead,
-enriches a company, drafts a message or sends one. Inside a workspace every screen
-remains read-only; creating a workspace is still the only mutation the UI can make
-(known issue 4).
+Ingestion is real: leads arrive from n8n through a signed webhook, are
+deduplicated, and land in `data-riil`. Qualification is real too — a lead is scored
+against the workspace's product by a model, banded by a weighted rubric computed in
+code, and moved to `qualified` with an audit row.
+
+What still does not exist: enrichment, message drafting, and sending. Inside a
+workspace every screen remains read-only — scoring runs from a command, not a
+button, because a model call takes 5–37 seconds (known issue 4 and 9).
 
 | Gate | Status |
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 165 tests, 6 files |
+| `pnpm test` | ✅ 192 tests, 8 files |
 | `pnpm build` | ✅ all 18 routes built |
-| `pnpm test:integration` | ✅ 64 tests, 5 files |
+| `pnpm test:integration` | ✅ 74 tests, 6 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
+| `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
 All seven gates were run on 2026-09-04 against the live local stack. Six are
@@ -711,6 +713,127 @@ the first thing to try if scoring 14 leads turns out to take five minutes.
 
 ---
 
+## Modul 3 — lead qualification (2026-09-05)
+
+The first thing in the product that produces *judgement* rather than storage, and
+the first consumer of `agent.ts`. `src/lib/ai/prompts/` and `src/lib/ai/schemas/`
+get their first files here, so this is the shape every later AI feature copies.
+
+### What shipped
+
+| File | Role |
+|---|---|
+| `src/lib/scoring/rubric.ts` | Six factors, their weights, the weighted total, the bands. Pure. Now **owns** `SCORE_FACTORS`. |
+| `src/lib/crm/transitions.ts` | The SPEC §1 status graph. Pure. |
+| `src/lib/ai/schemas/qualify.ts` | Zod: six sub-scores, mandatory evidence each, plus a reason. |
+| `src/lib/ai/prompts/qualify.ts` | System + user prompt, built from stored columns only. |
+| `src/lib/crm/activity.ts` | The rule 10 audit writer. |
+| `src/lib/crm/status.ts` | The only writer of `leads.status`. |
+| `src/lib/scoring/score.ts` | Load → prompt → `runAgent` → rubric → one transaction. |
+| `scripts/score-leads.ts` | `pnpm score:leads --workspace <slug> [--rescore] [--limit N]`. |
+| `scripts/create-product.ts` | `pnpm product:create` — what a workspace sells, plus its ICP. |
+| `tests/unit/rubric.test.ts` · `lead-status.test.ts` | 27 cases: the arithmetic and the graph. |
+| `tests/integration/qualify.test.ts` | 10 cases against real Postgres with a scripted model. |
+
+No new dependency, no schema change, no migration. `scripts/seed-data.ts` now
+re-exports `SCORE_FACTORS` from the rubric instead of keeping a second copy.
+
+### Proved with a real model, on real rows
+
+`pnpm score:leads --workspace maju-bersama --rescore` — twelve leads at status
+`new`, scored by `gemini-3.7-flash` against the seeded product and its ICP
+(Ritel + Makanan & Minuman · Jakarta Selatan, Bandung, Surabaya, Semarang ·
+11–200 karyawan):
+
+| Perusahaan | Industri | Kota | Band | Skor | | fit | lokasi |
+|---|---|---|---|---|---|---|---|
+| CV Prima Mandiri | Makanan & Minuman | Tangerang | 11-50 | **66** | warm | 90 | 40 |
+| CV Harapan Selaras | Makanan & Minuman | Balikpapan | 1-10 | **64** | warm | 95 | 35 |
+| PT Lestari Sejahtera | Pariwisata | Jakarta Barat | 51-200 | **55** | warm | 30 | 45 |
+| CV Karya Logistik | Kesehatan | Semarang | 51-200 | **51** | warm | 25 | 95 |
+| PT Cipta Teknologi | Otomotif | Surabaya | 201-500 | **44** | cold | 25 | 95 |
+| CV Mitra Mandiri | Pendidikan | Bekasi | 201-500 | **37** | cold | 15 | 35 |
+
+*(six of twelve; the full run spread 37–66)*
+
+The two rows that prove the rubric rather than the model: **Karya Logistik and
+Cipta Teknologi both score 95 on location** — Semarang and Surabaya are ICP cities
+— and both still land low, because location carries a weight of 10 and industry
+fit carries 25. A model returning a single number could not have been checked that
+way. Weighted-total-in-code is what makes the disagreement legible.
+
+Nothing scored `hot`, and that is correct rather than disappointing: none of the
+twelve is in **Ritel**, the strongest ICP match. The two Makanan & Minuman rows top
+the list on industry fit (90, 95) and are held back by being outside the size band
+and the target cities.
+
+### An ungrounded factor really does score 50
+
+SPEC §4's rule survived contact with a real model. From `PT Lestari Sejahtera`:
+
+```
+ 30 industry_fit     Perusahaan bergerak di bidang pariwisata, yang berada di luar
+                     target industri utama yaitu ritel serta makanan dan minuman.
+ 50 product_need     Data mengenai kebutuhan spesifik sistem kasir POS, kendala
+                     operasional, atau jumlah cabang tidak tersedia pada profil.
+ 95 company_size     Perkiraan 123 karyawan dalam rentang 51-200 karyawan, sangat
+                     sesuai dengan profil target pelanggan ideal.
+ 75 decision_maker   Tersedia kontak Kepala Cabang dari divisi Operasional.
+ 45 location         Berlokasi di Jakarta Barat, sementara kota target utama adalah
+                     Jakarta Selatan, Bandung, Surabaya, dan Semarang.
+ 50 digital_signals  Data mengenai sinyal digital atau aktivitas teknologi bisnis
+                     calon pelanggan tidak tersedia.
+```
+
+Two factors at exactly 50, each saying *tidak tersedia* in words rather than
+producing a confident number from nothing. Every other evidence line names a stored
+column — `industry`, `employee_count`, `size_band`, the contact's `position` and
+`department`, `city`. That is rule 3 holding under real conditions.
+
+### The bug the test found, which was not in the test
+
+`tests/integration/qualify.test.ts` asserts the audit trail reads
+`lead_scored` then `status_changed`. It passed twice and then failed.
+
+The cause was real and the test was right. Both rows are written in one
+transaction, and Postgres `now()` — which is what `defaultNow()` compiles to — is
+the *transaction* timestamp and does not advance. Both rows landed with identical
+`created_at`, so the trail had no recorded order at all, and the dashboard activity
+feed, which sorts by `created_at desc`, was free to show a status change above the
+scoring that caused it.
+
+`writeActivity` now inserts `clock_timestamp()`, which does advance within a
+transaction. The assertion stayed strict; the cause got fixed. Re-run three times
+to confirm it was the flake and not the fix.
+
+### Cost and latency, measured
+
+| | |
+|---|---|
+| Leads scored | 12, zero failures |
+| Latency | **2.9s – 36.7s**, average 12.2s |
+| Cost | **$0.0032 – $0.0040 per lead** at the paid-tier rate |
+
+**The 36.7s call would have timed out under the original 30s default.** Decision 39
+raised it to 60s on 2026-09-04 based on three samples; twelve more say the same
+thing, harder.
+
+The per-lead cost is **35–50% above the $0.0026 estimate** given in the progress
+report on 2026-09-04. That estimate was labelled as one; this is the measurement
+that replaces it. 1000 leads ≈ $4.00, not $2.60.
+
+Thinking budget was left alone. At $0.004 and 12s per lead the case for capping it
+is not made, and capping reasoning on the module whose entire job is reasoning is
+the wrong first economy. Revisit if enrichment or generation pushes the total.
+
+### Not done here
+
+`data-riil` is still unscored — it has no product, so two of six factors would be
+neutral by construction and the ranking would be noise. It waits on the owner
+running `pnpm product:create` for it, which is a business decision, not a task.
+
+---
+
 ## Prompt 3 — ingestion + dedupe: readiness assessment (2026-08-26)
 
 Asked: can we start "Prompt 3 — Ingestion + dedupe" (SPEC §2 and §3)?
@@ -825,12 +948,12 @@ UI → test), nothing started until the previous slice is green.
 5. ~~**Put a key in `.env.local` and run `pnpm ai:smoke`**~~ — **done 2026-09-04.**
    Free-tier Google key, real call, `ai_runs` row written. It cost the primary
    model its life; see above.
-6. **Module 3 — qualification.** ← *next.* `src/lib/scoring/rubric.ts`; the model returns
+6. ~~**Module 3 — qualification.**~~ — **done 2026-09-05.** `src/lib/scoring/rubric.ts`; the model returns
    per-factor sub-scores only and code computes the weighted total. The seed
    already writes rows in that shape, and `data-riil` has real leads with no score.
    This is where `src/lib/ai/prompts/` and `src/lib/ai/schemas/` get their first
    files.
-7. **Slice 3c — enrichment worker.** pg-boss, `/api/cron/tick`, `enrich_company`.
+7. **Slice 3c — enrichment worker.** ← *next.* pg-boss, `/api/cron/tick`, `enrich_company`.
    Worth reshaping first: SPEC §3 fetches websites, and every company scraped so
    far has none. The enrichment data for this segment is already in
    `companies.raw` — rating, review count, category, `maps_cid` from Serper.
@@ -949,6 +1072,19 @@ setup in `docs/n8n-integration.md`.
    `providerOptions.google.thinkingConfig.thinkingBudget` is the first lever to try
    and would cut cost at the same time.
 
+10. **The seed's scores are fiction and the AI's are not, and they disagree.** The
+   seed assigns fit levels at random, so its 60 leads score 28–90. The real scorer,
+   given the same seeded product and ICP, put the twelve it re-scored at 37–66.
+   Neither is wrong — the seed never claimed to derive its numbers from the ICP —
+   but a screenshot taken before and after `pnpm score:leads` will look like a
+   regression and is not one. Any demo should be either all-seeded or all-scored,
+   not a mixture.
+
+11. **`data-riil` cannot be scored yet.** It has no product row, so kesesuaian
+   industri and kebutuhan produk would both be 50 by construction and the ranking
+   would be noise. `pnpm product:create` exists for it; what it sells to those pet
+   shops is a business decision the owner has not made.
+
 ---
 
 ## Decisions
@@ -994,6 +1130,10 @@ setup in `docs/n8n-integration.md`.
 | 37 | `ai_runs.cost_usd` records the paid-tier rate even on a free-tier key | The column exists to answer "what does this cost at volume". Recording the free tier's zero answers nothing and becomes quietly wrong the day the key changes, with no signal that it did. |
 | 38 | The primary model is **`gemini-3.7-flash`**, replacing `gemini-2.5-flash` | Owner decision, 2026-09-04, forced rather than chosen: Google closed 2.5-flash to new API keys and the first real call returned 404. Candidates were probed directly, because `ListModels` still lists the dead one. `3.8-flash` was picked first and reversed on evidence — it returned 503 on 2 of 8 calls where `3.7-flash` returned 8 of 8, at the same price and the same free tier. A moving alias like `gemini-flash-latest` was rejected outright: SPEC §4 wants scores comparable over time, and a model that changes without a diff makes that impossible. |
 | 39 | `DEFAULT_TIMEOUT_MS` is 60s, not 30s | Measured, not guessed. Three real calls for a two-field answer took 24.6s, 5.3s and 22.2s, because `gemini-3.7-flash` spends output tokens thinking and how long that takes varies wildly. 30s would have manufactured `timeout` failures out of ordinary calls. Capping the thinking budget is the other lever and belongs to Module 3, which is the module that knows how much reasoning a score is worth. |
+| 40 | Scoring runs from `pnpm score:leads`, not from a button | A model call takes 5–37 seconds (measured over 12 leads), so twelve leads is minutes. That is fine for a command you walk away from and unusable for a form someone is watching. Building a fake queue to hide the wait would have been worse than admitting the wait. The real queue is slice 3c. |
+| 41 | `src/lib/crm/transitions.ts` holds the status graph; `status.ts` writes | The third instance of the same split (`rubric`/`score`, `policy`/`agent`): `status.ts` needs the database, and the unit suite must prove which moves are legal without one. `.claude/rules/outreach.md` names `status.ts` as the only writer, and it still is — the graph decides, `status.ts` writes. |
+| 42 | The status graph refuses skipping ahead | SPEC §1 draws a chain and the graph enforces it one step at a time. "Contacted without ever being qualified" is usually a send that ran before scoring, not efficiency, and a graph that permits everything catches neither. `lost` and `do_not_contact` are reachable from anywhere, because an opt-out that has to wait its turn is not an opt-out. |
+| 43 | `activities.created_at` is written with `clock_timestamp()`, not the column default | `now()` is the transaction timestamp and does not advance, so two audit rows written in one transaction — every scoring writes two — landed indistinguishable in time. The trail then had no recorded order and the dashboard feed could show a status change above its own cause. Found by an integration test that passed twice before it failed. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
