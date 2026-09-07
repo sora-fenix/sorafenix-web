@@ -2,9 +2,11 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-05 (ninth pass: lead qualification)
+**Last updated:** 2026-09-07 (tenth pass: the scraping week)
 **Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
-Module 3 now scores leads with a weighted rubric and moves them to `qualified`.
+Module 3 scores leads with a weighted rubric and moves them to `qualified`. The
+lead hunter now sweeps a rotating slice of 1440 keyword × city × page combinations
+per day, and `pnpm leads:stats` reads back what it found.
 Slice 3b (CSV upload) is still deferred — see decision 33. Enrichment (3c) is next.
 
 ---
@@ -31,13 +33,15 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
 | `pnpm test` | ✅ 192 tests, 8 files |
 | `pnpm build` | ✅ all 18 routes built |
-| `pnpm test:integration` | ✅ 74 tests, 6 files |
+| `pnpm test:integration` | ✅ 80 tests, 7 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
+| `pnpm leads:stats` | ✅ real run against `data-riil`: 14 companies, 26 duplicates, saturation visible |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
-All seven gates were run on 2026-09-04 against the live local stack. Six are
-green; the seventh is a deliberate deferral, not a failure.
+Re-run on 2026-09-07 against the live local stack: typecheck, lint, unit,
+integration and build all green. Seven of eight gates pass; the eighth is a
+deliberate deferral, not a failure.
 
 **The machine is unblocked.** Docker Desktop is installed and the Supabase stack
 runs locally: 10 containers, Postgres 17 healthy, migrations `0000`–`0003` applied,
@@ -834,6 +838,145 @@ running `pnpm product:create` for it, which is a business decision, not a task.
 
 ---
 
+## The scraping week — a volume sweep and the instrument to read it (2026-09-07)
+
+The owner asked for one week on scraping alone, to answer a question that is
+commercial rather than technical: **how many distinct pet shops can Serper
+actually reach in seven days?** Qualification comes after. This week only has to
+produce a defensible count and a set of leads worth qualifying.
+
+### Uniqueness needed no work, and that is the finding worth recording
+
+The brief was "scrape as much as possible, but the dashboard must stay unique".
+The second half was already true and cost nothing: `src/lib/leads/ingest.ts` runs
+`findDuplicate` against the whole workspace before every insert, so a repeat never
+creates a second company, contact or lead — it merges blank fields and writes a
+`lead_duplicate_merged` activity. The dashboard reads `leads`, one row per
+company. **Uniqueness is enforced at ingest, not at display**, which is why
+widening the sweep cannot break it.
+
+Nor does a daily re-run trip the idempotency guard: `Build SORA Payload` stamps
+each key with the timestamp, so today's sweep of the same city is a fresh
+delivery and dedupe — not `webhook_events` — decides what is new.
+
+### What shipped
+
+| File | Role |
+|---|---|
+| `n8n/workflows/sora-lead-hunter.json` | Day-slice rotation, city from the address, fetch nodes off, schedule enabled. |
+| `scripts/lead-stats.ts` | `pnpm leads:stats --workspace <slug> [--days N]`. Read-only, safe mid-sweep. |
+| `src/lib/db/queries/dashboard.ts` | `getDailyIntake()` — daily buckets with the gaps left in. |
+| `src/components/crm/intake-sparkline.tsx` | The card's bars. Server-rendered, no `'use client'`. |
+| `src/lib/format.ts` | `jakartaDayKey()` / `formatDayShort()`; `formatRelativeDay` now reuses the first. |
+| `tests/integration/intake.test.ts` | 6 cases against real Postgres. |
+
+No new dependency, no schema change, no migration.
+
+### The sweep is a rotation, not a repeat
+
+`Search Plan` was one keyword × one city × one page. It is now 12 × 24 × 5 =
+**1440 combinations**, split six ways: combination *i* belongs to slice `i % 6`,
+and the day index comes from a fixed `START_DATE`. So a day runs 240 searches
+that are a *mix* of keywords and cities, the whole space is covered in six days,
+and day 7 lands back on slice 0 — which is what measures how fast new businesses
+appear in ground already swept.
+
+Verified by simulating the node body over eight dates before it was written to
+the file: six disjoint slices of 240, union exactly 1440, zero overlap,
+**1680 Serper credits for a seven-day week** against a free tier of ~2500.
+`MAX_SEARCHES_PER_DAY = 260` is a hard ceiling in the same node, so a widened
+keyword list cannot quietly spend the balance in two days — a failure that would
+look like "Serper stopped working".
+
+### The website fetch is off, and the measurement says it should be
+
+`Fetch Website` and `Fetch Contact Page` are the dominant cost of a wide sweep —
+two HTTP requests per business — and in this segment they buy nothing. Across all
+14 companies now in `data-riil`, **website coverage is 0% and email coverage is
+0%**, which confirms at larger n what the first import of 11 suggested. Both
+nodes are Deactivated for the volume week.
+
+`Extract Contacts` was the obstacle: it aligns three node outputs by index. It now
+reads them through `safeAll()` / `htmlAt()`, and was tested in all three states it
+can be in — fetch nodes **enabled**, **disabled** (n8n passes items through, so
+the alignment still holds) and **unwired** (`$()` throws). All three produce the
+same rows; only the email differs, and only when there is HTML to read it from.
+
+### `city` now comes from the address, not from the search term
+
+`Normalize Place` stored `kota = params.lokasi`. With kecamatan-level search terms
+that would have written `city = 'Rungkut Surabaya'`, and the same shop found again
+under `'Surabaya Timur'` would not have matched on the `fuzzy_name_city` strategy
+— the strings differ. Domain and phone still caught it, so this was a residual
+hole; the wide sweep is exactly what opens it.
+
+It is derived from Serper's `address` now, with the search term's base city as the
+fallback and the term itself kept in `raw` for provenance. Eleven cases were
+checked offline, including the one that matters: **one address found via four
+different search terms stores one city.**
+
+### The first real numbers already show saturation
+
+`pnpm leads:stats --workspace data-riil`, against the sweeps the owner has already
+run:
+
+```
+  day                new   merged    found   cumulative
+  2026-09-01 Tue      11        9       20           11
+  2026-09-04 Fri       3        7       10           14
+  2026-09-06 Sun       0       10       10           14
+```
+
+**14 new from 40 contactable results.** The 2026-09-06 row is the whole point of
+the instrument: ten businesses came back and *every one of them was already
+stored*. That is the same keyword and city exhausted, and it says plainly that
+more days buy nothing — more keywords and more cities do. Which is what the
+rotation is for.
+
+Two more readings from the same run:
+
+- **All 26 duplicates were caught by `phone`.** Zero by `domain`, because no
+  company in this segment has a website. The franchise over-merge risk below is
+  therefore theoretical *for pet shops*, and the breakdown is in the report so it
+  stops being theoretical the moment it isn't.
+- **Reachability: phone 100%, WhatsApp 79%, email 0%, website 0%.** The Module 6
+  channel decision is made by this table, not by preference.
+
+### Known limitation, watched rather than fixed
+
+`findDuplicate` runs `byDomain` first, so several branches of one chain sharing a
+website collapse into one company. Right at low volume, wrong for a volume week.
+Google's `cid` is already carried to `companies.source_url` and is the canonical
+per-branch identifier, so a `by_maps_cid` strategy is the eventual fix — but it
+changes a SPEC-ordered, 82-case tested module, and it would not undo a domain
+merge that fires afterwards anyway. The strategy breakdown in `leads:stats` makes
+the size of the problem visible before anyone changes dedupe on a guess.
+
+### What has **not** been done
+
+Three things, all of them requiring the live container or a browser, and none of
+them assumed:
+
+1. **The day-0 Serper measurement.** The open question from 2026-09-01 —
+   whether `jumlah: 20` returns 20 or 10 — is still open. It doubles or halves
+   every number above, and only one manual Execute with `PAGES = [1, 2]` settles
+   it, read from the item count between `Serper Places` and `Split Out Places`.
+2. **The workflow has not been imported into the running container.** The
+   committed JSON is patched; the container still runs the old copy. Re-importing
+   the committed file unbinds the Serper credential, so the safe procedure is
+   export live → patch → `n8n import:workflow` onto the same id (2026-09-01).
+3. **The dashboard card has not been opened in a browser.** It typechecks, lints
+   and builds, and the query behind it is covered by six integration cases — but
+   nobody has looked at it. The route is unchanged at 965 B, so the sparkline
+   added no client JavaScript.
+
+`active` on the workflow is deliberately still `false`. Enabling the trigger node
+was ours; setting a workflow to Active is a deliberate act in the UI, and n8n does
+**not** catch up a missed schedule — a laptop asleep at 08:00 is a lost day, and
+it will show as a zero in `leads:stats` rather than being backfilled.
+
+---
+
 ## Prompt 3 — ingestion + dedupe: readiness assessment (2026-08-26)
 
 Asked: can we start "Prompt 3 — Ingestion + dedupe" (SPEC §2 and §3)?
@@ -953,13 +1096,17 @@ UI → test), nothing started until the previous slice is green.
    already writes rows in that shape, and `data-riil` has real leads with no score.
    This is where `src/lib/ai/prompts/` and `src/lib/ai/schemas/` get their first
    files.
-7. **Slice 3c — enrichment worker.** ← *next.* pg-boss, `/api/cron/tick`, `enrich_company`.
+7. ~~**The scraping week — volume sweep + instrument.**~~ — **done 2026-09-07.**
+   Day-slice rotation in n8n, `pnpm leads:stats`, and the intake card. Owner
+   decision, taken ahead of 3c: qualification is worth more against a few hundred
+   leads than against fourteen. The week itself still has to be *run*.
+8. **Slice 3c — enrichment worker.** ← *next, after the week.* pg-boss, `/api/cron/tick`, `enrich_company`.
    Worth reshaping first: SPEC §3 fetches websites, and every company scraped so
    far has none. The enrichment data for this segment is already in
    `companies.raw` — rating, review count, category, `maps_cid` from Serper.
-8. **Slice 3b — CSV upload.** Deferred, not dropped. Parser approved; XLSX dropped.
-9. **Module 5 + approvals** — content generation with `needs_input` gating.
-10. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
+9. **Slice 3b — CSV upload.** Deferred, not dropped. Parser approved; XLSX dropped.
+10. **Module 5 + approvals** — content generation with `needs_input` gating.
+11. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
     there is never a code path that sends without it.
 
 ## Blocked
@@ -1134,6 +1281,10 @@ setup in `docs/n8n-integration.md`.
 | 41 | `src/lib/crm/transitions.ts` holds the status graph; `status.ts` writes | The third instance of the same split (`rubric`/`score`, `policy`/`agent`): `status.ts` needs the database, and the unit suite must prove which moves are legal without one. `.claude/rules/outreach.md` names `status.ts` as the only writer, and it still is — the graph decides, `status.ts` writes. |
 | 42 | The status graph refuses skipping ahead | SPEC §1 draws a chain and the graph enforces it one step at a time. "Contacted without ever being qualified" is usually a send that ran before scoring, not efficiency, and a graph that permits everything catches neither. `lost` and `do_not_contact` are reachable from anywhere, because an opt-out that has to wait its turn is not an opt-out. |
 | 43 | `activities.created_at` is written with `clock_timestamp()`, not the column default | `now()` is the transaction timestamp and does not advance, so two audit rows written in one transaction — every scoring writes two — landed indistinguishable in time. The trail then had no recorded order and the dashboard feed could show a status change above its own cause. Found by an integration test that passed twice before it failed. |
+| 44 | The week sweeps a **rotating sixth** of the search space each day, not the whole space | Owner decision, 2026-09-07. Re-running every combination daily spends Serper credits to rediscover rows dedupe merges anyway — the 2026-09-06 run found 10 businesses and 0 new ones. Six disjoint slices cover the whole space in six days and leave day 7 to repeat slice 0, which is the only way to measure how fast new businesses appear in swept ground. Costs 1680 credits of a ~2500 free tier, against 10 080 for a daily full sweep. |
+| 45 | `Fetch Website` / `Fetch Contact Page` are **off** for the volume week | Measured, not assumed: website coverage across `data-riil` is 0/14 and email coverage 0/14. Two HTTP requests per business is the dominant cost of a wide sweep and it buys nothing in this segment. Email enrichment for the minority that do have a site belongs to slice 3c, running against stored rows — not to a scraper that has to finish inside a morning. `Extract Contacts` handles both modes and is tested in three. |
+| 46 | `companies.city` comes from the scraped **address**, not from the search term | Kecamatan-level search terms ('Rungkut Surabaya') would have been stored as the city, and the same shop found under a second term would then miss the `fuzzy_name_city` strategy. Phone and domain still caught it, so this was closing a residual hole before the wide sweep opened it. The search term is kept in `raw`: provenance, not identity. |
+| 47 | The daily intake chart keeps its **gaps** instead of closing them | A day with no leads during the scraping week is a finding — the laptop was asleep, or the workflow was not Active — and n8n does not catch up a missed schedule. Buckets are therefore built in TypeScript rather than by `group by`, so a quiet day is a zero rather than an absent row. A chart that interpolated over it would report a lie by omission. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
