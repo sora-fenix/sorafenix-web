@@ -952,23 +952,53 @@ changes a SPEC-ordered, 82-case tested module, and it would not undo a domain
 merge that fires afterwards anyway. The strategy breakdown in `leads:stats` makes
 the size of the problem visible before anyone changes dedupe on a guess.
 
+### `jumlah: 20` returns 10, and the stored executions said so for free
+
+The question left open on 2026-09-01 — whether Serper ignores `num` or whether
+`Extract Contacts` was dropping half the results — is answered, and it did not
+cost a credit to answer. n8n keeps every execution in its SQLite database, so the
+item counts were already on disk:
+
+| Execution | `Serper Places` | `Split Out Places` | `Extract Contacts` |
+|---|---|---|---|
+| 3, 4 (2026-09-01) | 1 response | **10** | 10 |
+| 5 (2026-09-04) | 1 response | **10** | 10 |
+| 6 (2026-09-06) | 1 response | **10** | 10 |
+
+Four independent runs, all 10, while `num` asked for 20 — and `Extract Contacts`
+dropped **none** of them, which clears our filter of the suspicion it was under.
+So **`PAGES` is the only lever**, exactly as the sticky note guessed but could not
+prove. `JUMLAH` stays at 20: asking costs nothing, and the extra results would
+arrive without a code change if the endpoint ever honours it.
+
+The practical consequence is that a city yields up to 50 with `PAGES = [1..5]`,
+not 100, and the whole space is at most 14 400 raw results before dedupe.
+
+**The lesson worth keeping:** an execution history is a measurement that has
+already been taken. Spending API credits to re-ask a question the logs answer is
+a habit, not a necessity.
+
+### Imported into the running container, credential intact
+
+The container was running the pre-rotation workflow — `KEYWORDS = ['pet shop']`,
+both fetch nodes enabled, schedule disabled. It now runs the committed copy, and
+the three Code nodes are byte-identical between repo and container.
+
+The import followed decision 31's constraint rather than fighting it: export the
+live workflow, patch *that*, import back onto the same id. The Serper credential
+(`e9YqpYQyVr1RjeKA`) is still bound afterwards, verified by re-export. A backup of
+the pre-import copy was taken first.
+
+`active` is still **false**. Enabling the trigger node was ours; setting a
+workflow Active is the owner's, and it is the one switch that starts spending
+credits.
+
 ### What has **not** been done
 
-Three things, all of them requiring the live container or a browser, and none of
-them assumed:
-
-1. **The day-0 Serper measurement.** The open question from 2026-09-01 —
-   whether `jumlah: 20` returns 20 or 10 — is still open. It doubles or halves
-   every number above, and only one manual Execute with `PAGES = [1, 2]` settles
-   it, read from the item count between `Serper Places` and `Split Out Places`.
-2. **The workflow has not been imported into the running container.** The
-   committed JSON is patched; the container still runs the old copy. Re-importing
-   the committed file unbinds the Serper credential, so the safe procedure is
-   export live → patch → `n8n import:workflow` onto the same id (2026-09-01).
-3. **The dashboard card has not been opened in a browser.** It typechecks, lints
-   and builds, and the query behind it is covered by six integration cases — but
-   nobody has looked at it. The route is unchanged at 965 B, so the sparkline
-   added no client JavaScript.
+**The dashboard card has not been opened in a browser.** It typechecks, lints and
+builds, and the query behind it is covered by six integration cases — but nobody
+has looked at it. The route is unchanged at 965 B, so the sparkline added no
+client JavaScript.
 
 `active` on the workflow is deliberately still `false`. Enabling the trigger node
 was ours; setting a workflow to Active is a deliberate act in the UI, and n8n does

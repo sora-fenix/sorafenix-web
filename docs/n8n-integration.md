@@ -125,10 +125,16 @@ so each search POSTs its own batch with its own `idempotency_key`
 (`run_{keyword}-{kota}-p{page}_{stamp}`), and one failure does not cost the
 others. `Run Summary` on the loop's *done* output totals what came back.
 
-**Serper `/places` returns at most 20 per request.** `PAGES` is how a city goes
-past 20 — `[1, 2, 3]` gives up to 60. Whether `jumlah: 20` actually yields 20 is
-still unverified; check the item count between `Serper Places` and
-`Split Out Places` on the first run.
+**Serper `/places` returns 10 per request, not 20 — measured.** Four stored
+executions (2026-09-01 to 2026-09-06) each put exactly 10 items into
+`Split Out Places` while `num` asked for 20, and `Extract Contacts` dropped none
+of them, so the shortfall is Serper and not our contact filter. `PAGES` is
+therefore the only lever that gets a city past 10: `[1, 2, 3, 4, 5]` gives up to
+50. `JUMLAH` stays at 20 because asking costs nothing and the extra results
+would arrive without a code change if the endpoint ever honours it.
+
+The whole space is 1440 searches × 10 = **up to 14 400 raw results** before
+dedupe, spread over six days.
 
 **Re-running the same combination tomorrow is safe.** A new run gets a new key,
 so nothing is replayed away; SORA's dedupe collapses what it has seen before,
