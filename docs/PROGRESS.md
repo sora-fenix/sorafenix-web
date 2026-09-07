@@ -5,7 +5,7 @@ Current state and next steps. Updated after every task, per CLAUDE.md §4.
 **Last updated:** 2026-09-07 (tenth pass: the scraping week)
 **Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
 Module 3 scores leads with a weighted rubric and moves them to `qualified`. The
-lead hunter now sweeps a rotating slice of 1440 keyword × city × page combinations
+lead hunter now sweeps a rotating slice of 1500 keyword × city × page combinations
 per day, and `pnpm leads:stats` reads back what it found.
 Slice 3b (CSV upload) is still deferred — see decision 33. Enrichment (3c) is next.
 
@@ -874,16 +874,16 @@ No new dependency, no schema change, no migration.
 
 ### The sweep is a rotation, not a repeat
 
-`Search Plan` was one keyword × one city × one page. It is now 12 × 24 × 5 =
-**1440 combinations**, split six ways: combination *i* belongs to slice `i % 6`,
-and the day index comes from a fixed `START_DATE`. So a day runs 240 searches
+`Search Plan` was one keyword × one city × one page. It is now 12 × 25 × 5 =
+**1500 combinations**, split six ways: combination *i* belongs to slice `i % 6`,
+and the day index comes from a fixed `START_DATE`. So a day runs 250 searches
 that are a *mix* of keywords and cities, the whole space is covered in six days,
 and day 7 lands back on slice 0 — which is what measures how fast new businesses
 appear in ground already swept.
 
 Verified by simulating the node body over eight dates before it was written to
-the file: six disjoint slices of 240, union exactly 1440, zero overlap,
-**1680 Serper credits for a seven-day week** against a free tier of ~2500.
+the file: six disjoint slices of 250, union exactly 1500, zero overlap,
+**1750 Serper credits for a seven-day week** against a free tier of ~2500.
 `MAX_SEARCHES_PER_DAY = 260` is a hard ceiling in the same node, so a widened
 keyword list cannot quietly spend the balance in two days — a failure that would
 look like "Serper stopped working".
@@ -993,12 +993,59 @@ the pre-import copy was taken first.
 workflow Active is the owner's, and it is the one switch that starts spending
 credits.
 
+### The first real sweep found the bug that would have wasted the week
+
+The owner ran the workflow and reported the count had not moved. It had not, and
+neither of the two reasons was a scraping problem.
+
+**One empty search ended the entire day's sweep.** `Send to SORA` is what loops
+back into `Loop Over Searches`. When `Extract Contacts` produced no items — which
+happens whenever Serper answers `places: []` — the chain stopped before that node,
+the loop was never told to advance, and the remaining 239 searches simply never
+ran. With the old one-search-per-Execute workflow this was unreachable; the
+rotation made it fatal on the first query. `Extract Contacts` now runs with
+`alwaysOutputData` and `Build SORA Payload` always returns exactly one item, so an
+empty batch is posted, SORA answers `accepted: 0`, and the sweep continues.
+
+**Serper answers empty at random, not for bad location strings.** The first
+diagnosis was that kecamatan-level queries were unsupported, because
+`pet shop Surabaya Pusat` had returned `places: []`. A 25-search probe an hour
+later returned **10 results for that same query**. Across the probe, 22 of 25
+locations returned 10, Kenjeran returned 5, and three returned none — and those
+three are not condemned on one sample, because the sample that condemned
+Surabaya Pusat was wrong. Call it **one search in eight**, billed like any other.
+
+That reframes which fix mattered: the location list was never broken, and the
+loop was. A transient empty on search #1 would have cost 249 searches every day
+for a week, and the symptom would have been "Serper isn't finding anything".
+
+### The probe, and what the sweep now yields
+
+`data-riil` went from 14 companies to **130** on one 25-search probe — 116 new
+from 239 contactable results, 109 duplicates all caught by the `phone` strategy
+and none by `domain`.
+
+`cityFromAddress` is vindicated on real data. 130 companies land under **six**
+city names — Surabaya 72, Sidoarjo 22, Malang 11, Batu 9, Gresik 8, Mojokerto 8 —
+rather than the 25 search-term strings that would otherwise have been stored.
+That is what keeps the `fuzzy_name_city` dedupe strategy able to fire at all.
+
+Reachability at n=130 barely moved from n=14: **phone 100%, WhatsApp 92%,
+email 0%, website 0%.** Nine times out of ten this segment is reachable on
+WhatsApp and no other way.
+
+`KOTA` gained bare `'Surabaya'` alongside its five sub-regions, since the probe
+shows it returns a different set. The space is now 12 × 25 × 5 = **1500**, 250 a
+day, **1750 credits** for the week.
+
 ### What has **not** been done
 
-**The dashboard card has not been opened in a browser.** It typechecks, lints and
-builds, and the query behind it is covered by six integration cases — but nobody
-has looked at it. The route is unchanged at 965 B, so the sparkline added no
-client JavaScript.
+**The dashboard card has been seen and works** — 14 at the time, bars on the
+right days. That item is closed.
+
+**The workflow is still not Active.** Everything else is in place: the container
+runs the committed copy, the Serper credential is bound, the schedule node is
+enabled. `active: false` is the last switch and it is the owner's.
 
 `active` on the workflow is deliberately still `false`. Enabling the trigger node
 was ours; setting a workflow to Active is a deliberate act in the UI, and n8n does
@@ -1311,10 +1358,11 @@ setup in `docs/n8n-integration.md`.
 | 41 | `src/lib/crm/transitions.ts` holds the status graph; `status.ts` writes | The third instance of the same split (`rubric`/`score`, `policy`/`agent`): `status.ts` needs the database, and the unit suite must prove which moves are legal without one. `.claude/rules/outreach.md` names `status.ts` as the only writer, and it still is — the graph decides, `status.ts` writes. |
 | 42 | The status graph refuses skipping ahead | SPEC §1 draws a chain and the graph enforces it one step at a time. "Contacted without ever being qualified" is usually a send that ran before scoring, not efficiency, and a graph that permits everything catches neither. `lost` and `do_not_contact` are reachable from anywhere, because an opt-out that has to wait its turn is not an opt-out. |
 | 43 | `activities.created_at` is written with `clock_timestamp()`, not the column default | `now()` is the transaction timestamp and does not advance, so two audit rows written in one transaction — every scoring writes two — landed indistinguishable in time. The trail then had no recorded order and the dashboard feed could show a status change above its own cause. Found by an integration test that passed twice before it failed. |
-| 44 | The week sweeps a **rotating sixth** of the search space each day, not the whole space | Owner decision, 2026-09-07. Re-running every combination daily spends Serper credits to rediscover rows dedupe merges anyway — the 2026-09-06 run found 10 businesses and 0 new ones. Six disjoint slices cover the whole space in six days and leave day 7 to repeat slice 0, which is the only way to measure how fast new businesses appear in swept ground. Costs 1680 credits of a ~2500 free tier, against 10 080 for a daily full sweep. |
+| 44 | The week sweeps a **rotating sixth** of the search space each day, not the whole space | Owner decision, 2026-09-07. Re-running every combination daily spends Serper credits to rediscover rows dedupe merges anyway — the 2026-09-06 run found 10 businesses and 0 new ones. Six disjoint slices cover the whole space in six days and leave day 7 to repeat slice 0, which is the only way to measure how fast new businesses appear in swept ground. Costs 1750 credits of a ~2500 free tier, against 10 500 for a daily full sweep. |
 | 45 | `Fetch Website` / `Fetch Contact Page` are **off** for the volume week | Measured, not assumed: website coverage across `data-riil` is 0/14 and email coverage 0/14. Two HTTP requests per business is the dominant cost of a wide sweep and it buys nothing in this segment. Email enrichment for the minority that do have a site belongs to slice 3c, running against stored rows — not to a scraper that has to finish inside a morning. `Extract Contacts` handles both modes and is tested in three. |
 | 46 | `companies.city` comes from the scraped **address**, not from the search term | Kecamatan-level search terms ('Rungkut Surabaya') would have been stored as the city, and the same shop found under a second term would then miss the `fuzzy_name_city` strategy. Phone and domain still caught it, so this was closing a residual hole before the wide sweep opened it. The search term is kept in `raw`: provenance, not identity. |
 | 47 | The daily intake chart keeps its **gaps** instead of closing them | A day with no leads during the scraping week is a finding — the laptop was asleep, or the workflow was not Active — and n8n does not catch up a missed schedule. Buckets are therefore built in TypeScript rather than by `group by`, so a quiet day is a zero rather than an absent row. A chart that interpolated over it would report a lie by omission. |
+| 48 | An empty Serper result must not end the sweep | `Send to SORA` is the node that loops back into `Loop Over Searches`, so a chain that produces no items leaves the loop unadvanced and the day's remaining searches unrun. Roughly one query in eight returns `places: []` for no reason — measured, and the same query answered normally an hour later — so this was not an edge case but the common path. `Extract Contacts` runs with alwaysOutputData and `Build SORA Payload` always returns one item; an empty batch is posted and SORA answers `accepted: 0`. Neither is tidy, and neither may be removed. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

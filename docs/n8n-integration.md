@@ -114,11 +114,12 @@ const START_DATE           = '2026-09-07'; // first day of the sweep
 const MAX_SEARCHES_PER_DAY = 260;          // hard ceiling on Serper credits
 ```
 
-12 × 24 × 5 = **1440 combinations**, and combination *i* belongs to slice
-`i % 6`. So a day runs 240 searches that are a *mix* of keywords and cities, the
+12 × 25 × 5 = **1500 combinations**, and combination *i* belongs to slice
+`i % 6`. So a day runs 250 searches that are a *mix* of keywords and cities, the
 whole space is covered in six days, and day 7 lands back on slice 0 — which is
 how you measure whether new businesses are still appearing in ground you already
-swept. Seven days costs **1680 Serper credits**; the free tier is ~2500.
+swept. Seven days costs **1750 Serper credits**; the free tier is ~2500, and an
+empty result is billed like any other.
 
 `Loop Over Searches` runs the slice one search at a time through the whole chain,
 so each search POSTs its own batch with its own `idempotency_key`
@@ -133,8 +134,17 @@ therefore the only lever that gets a city past 10: `[1, 2, 3, 4, 5]` gives up to
 50. `JUMLAH` stays at 20 because asking costs nothing and the extra results
 would arrive without a code change if the endpoint ever honours it.
 
-The whole space is 1440 searches × 10 = **up to 14 400 raw results** before
+The whole space is 1500 searches × 10 = **up to 15 000 raw results** before
 dedupe, spread over six days.
+
+**A search that finds nothing is normal, and must not stop the sweep.** Roughly
+one query in eight comes back `places: []` for no reason and answers normally
+minutes later — `pet shop Surabaya Pusat` did exactly that on 2026-09-07. Because
+`Send to SORA` is what loops back into `Loop Over Searches`, a node chain that
+produces no items would end the day's sweep at the first empty query. So
+`Extract Contacts` runs with **Always Output Data** and `Build SORA Payload`
+always returns exactly one item — an empty batch is still posted and SORA answers
+`accepted: 0`. Do not "tidy up" either of those.
 
 **Re-running the same combination tomorrow is safe.** A new run gets a new key,
 so nothing is replayed away; SORA's dedupe collapses what it has seen before,
