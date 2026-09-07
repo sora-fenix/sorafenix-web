@@ -101,41 +101,74 @@ outside the machine — see *Reaching a local machine from n8n Cloud* below.
 
 ## Scraping at volume
 
-One Execute sweeps **keyword × city × page**. Everything you edit for a bigger
-run is three lines in the `Search Plan` node:
+One Execute sweeps **one day's slice** of a `keyword × city × page` space.
+Everything you edit lives in the `Search Plan` node:
 
 ```js
-const KEYWORDS = ['pet shop', 'klinik hewan'];
-const KOTA     = ['Surabaya', 'Sidoarjo', 'Malang'];
-const PAGES    = [1, 2];
+const KEYWORDS = ['pet shop', 'petshop', 'toko hewan peliharaan', /* … 12 total */];
+const KOTA     = ['Surabaya Pusat', 'Rungkut Surabaya', 'Sidoarjo', /* … 24 total */];
+const PAGES    = [1, 2, 3, 4, 5];
+
+const SLICES               = 6;            // day 7 repeats slice 0
+const START_DATE           = '2026-09-07'; // first day of the sweep
+const MAX_SEARCHES_PER_DAY = 260;          // hard ceiling on Serper credits
 ```
 
-That is 12 searches. `Loop Over Searches` runs them one at a time through the
-whole chain, so each search POSTs its own batch with its own
-`idempotency_key` (`run_{keyword}-{kota}-p{page}_{stamp}`), and one failure does
-not cost the others. `Run Summary` on the loop's *done* output totals what came
-back.
+12 × 24 × 5 = **1440 combinations**, and combination *i* belongs to slice
+`i % 6`. So a day runs 240 searches that are a *mix* of keywords and cities, the
+whole space is covered in six days, and day 7 lands back on slice 0 — which is
+how you measure whether new businesses are still appearing in ground you already
+swept. Seven days costs **1680 Serper credits**; the free tier is ~2500.
+
+`Loop Over Searches` runs the slice one search at a time through the whole chain,
+so each search POSTs its own batch with its own `idempotency_key`
+(`run_{keyword}-{kota}-p{page}_{stamp}`), and one failure does not cost the
+others. `Run Summary` on the loop's *done* output totals what came back.
 
 **Serper `/places` returns at most 20 per request.** `PAGES` is how a city goes
-past 20 — `[1, 2, 3]` gives up to 60.
+past 20 — `[1, 2, 3]` gives up to 60. Whether `jumlah: 20` actually yields 20 is
+still unverified; check the item count between `Serper Places` and
+`Split Out Places` on the first run.
 
 **Re-running the same combination tomorrow is safe.** A new run gets a new key,
 so nothing is replayed away; SORA's dedupe collapses what it has seen before,
 and a merge only fills blank fields — it never overwrites a value a human
-corrected.
+corrected. What reaches the dashboard is unique no matter how wide the sweep.
 
 **Speed.** Serper is not the slow part: `Fetch Website` and `Fetch Contact Page`
-are, at up to two page loads per business. Deactivate both when phone and
-WhatsApp from Google Maps are enough, and turn them back on when hunting for
-email addresses — that is the only place emails come from.
+are, at up to two page loads per business. Both ship **Deactivated**, because
+across every company scraped so far website coverage is 0% and so is email.
+Turn them back on when hunting email addresses — that is the only place emails
+come from — and `Extract Contacts` handles either mode without another edit.
 
-**On a schedule.** `Every morning at 08:00` is in the workflow but **disabled**.
-Enable the node *and* set the workflow Active; a disabled node in an inactive
-workflow is inert twice over.
+**On a schedule.** `Every morning at 08:00` is now **enabled**; set the workflow
+**Active** to make it fire. n8n does *not* catch up a missed schedule, so a
+laptop asleep at 08:00 is a lost day — it will appear as a zero in
+`pnpm leads:stats`, not be backfilled. The stack it needs up: `pnpm db:start`,
+the app on port 3000 (`pnpm build && pnpm start` — not `next dev` for a week),
+and `pnpm n8n:start`.
+
+**Reading the result.**
+
+```
+pnpm leads:stats --workspace data-riil            # last 7 days
+pnpm leads:stats --workspace data-riil --days 14
+```
+
+New vs merged per day is the number that matters. New falling while merged climbs
+means the ground is covered, and widening `KEYWORDS`/`KOTA` buys more than another
+day does.
 
 One thing to know before splitting work across campaigns: a company already in
 the workspace gets no second lead when another campaign finds it again
 (PROGRESS decision 27). With everything in one campaign this never bites.
+
+### Applying a patched workflow to the running container
+
+Re-importing `n8n/workflows/sora-lead-hunter.json` straight from the repo
+**unbinds the Serper credential** — the committed copy carries a placeholder
+credential id on purpose. Export the live workflow, apply the change, and import
+back onto the **same id**; the credential stays attached.
 
 ---
 
