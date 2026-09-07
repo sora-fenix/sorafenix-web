@@ -8,11 +8,13 @@ import {
   CategoryBadge,
   LeadStatusBadge,
 } from '@/components/crm/labels'
+import { IntakeSparkline } from '@/components/crm/intake-sparkline'
 import { navItem } from '@/components/layout/nav-items'
 import { PageShell } from '@/components/layout/page-shell'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { getWorkspaceContext } from '@/lib/auth/session'
 import {
+  getDailyIntake,
   getDashboardStats,
   getDueLeads,
   getFunnel,
@@ -55,16 +57,18 @@ export default async function DashboardPage({ params }: PageProps) {
   if (context === null) notFound()
 
   const workspaceId = context.workspace.id
-  const [stats, funnel, dueLeads, activities, pendingApprovals] = await Promise.all([
+  const [stats, funnel, dueLeads, activities, pendingApprovals, intake] = await Promise.all([
     getDashboardStats(workspaceId),
     getFunnel(workspaceId),
     getDueLeads(workspaceId),
     getRecentActivities(workspaceId),
     getPendingApprovalCount(workspaceId),
+    getDailyIntake(workspaceId),
   ])
 
   const item = navItem('dashboard')
   const funnelMax = Math.max(...funnel.map((s) => s.count), 1)
+  const intakeTotal = intake.reduce((sum, day) => sum + day.count, 0)
 
   return (
     <PageShell title={item.label} description={item.description}>
@@ -92,6 +96,32 @@ export default async function DashboardPage({ params }: PageProps) {
           hint="Draf di antrean"
         />
       </div>
+
+      <section className="mt-8">
+        <h2 className="mb-3 text-sm font-semibold">Prospek Baru 7 Hari Terakhir</h2>
+        <Card>
+          <CardContent>
+            {intakeTotal === 0 ? (
+              <p className="text-muted-foreground py-6 text-center text-sm">
+                Belum ada prospek baru minggu ini. Jalankan pencarian di n8n, atau
+                cek apakah workflow-nya masih Active.
+              </p>
+            ) : (
+              <>
+                <div className="mb-4 flex items-baseline gap-2">
+                  <span className="text-2xl font-semibold tabular-nums">
+                    {formatNumber(intakeTotal)}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    perusahaan unik, setelah duplikat digabung
+                  </span>
+                </div>
+                <IntakeSparkline days={intake} />
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </section>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <section>

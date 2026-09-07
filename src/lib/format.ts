@@ -22,6 +22,20 @@ const dateTimeFormatter = new Intl.DateTimeFormat('id-ID', {
 
 const numberFormatter = new Intl.NumberFormat('id-ID')
 
+const dayKeyFormatter = new Intl.DateTimeFormat('en-CA', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  timeZone: TIME_ZONE,
+})
+
+// A calendar date already in Jakarta terms, so it is read back in UTC — shifting
+// it a second time would move a Monday to a Sunday for anyone west of Jakarta.
+const weekdayFormatter = new Intl.DateTimeFormat('id-ID', {
+  weekday: 'short',
+  timeZone: 'UTC',
+})
+
 export function formatDate(value: Date | null): string {
   if (value === null) return '—'
   return dateFormatter.format(value)
@@ -40,19 +54,27 @@ export function formatPercent(ratio: number): string {
   return `${(ratio * 100).toFixed(1).replace('.', ',')}%`
 }
 
+/**
+ * "YYYY-MM-DD" for the day an instant falls on in Jakarta.
+ *
+ * This is the key daily figures are bucketed by, so the same instant always
+ * lands on the same bar no matter where the server runs. Postgres does the same
+ * bucketing with `at time zone 'Asia/Jakarta'`; the two must agree.
+ */
+export function jakartaDayKey(value: Date): string {
+  return dayKeyFormatter.format(value)
+}
+
+/** "Sen" / "Sel" … for a key produced by `jakartaDayKey`. */
+export function formatDayShort(dayKey: string): string {
+  return weekdayFormatter.format(new Date(`${dayKey}T00:00:00Z`))
+}
+
 /** "3 hari lagi" / "2 hari lalu" / "Hari ini", relative to today in Jakarta. */
 export function formatRelativeDay(value: Date | null): string {
   if (value === null) return '—'
 
-  const startOfDay = (d: Date): number => {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      timeZone: TIME_ZONE,
-    }).format(d)
-    return Date.parse(`${parts}T00:00:00Z`)
-  }
+  const startOfDay = (d: Date): number => Date.parse(`${jakartaDayKey(d)}T00:00:00Z`)
 
   const days = Math.round((startOfDay(value) - startOfDay(new Date())) / 86_400_000)
 

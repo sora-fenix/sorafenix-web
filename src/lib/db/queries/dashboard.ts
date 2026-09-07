@@ -6,6 +6,7 @@ import { db } from '@/lib/db/drizzle'
 import { activities, companies, contacts, leads } from '@/lib/db/schema'
 import { messages } from '@/lib/db/schema'
 import type { LeadStatus } from '@/lib/db/schema'
+import { jakartaDayKey } from '@/lib/format'
 
 /**
  * Dashboard figures. Every number is aggregated in Postgres and returned already
@@ -250,6 +251,51 @@ export async function getPendingApprovalCount(workspaceId: string): Promise<numb
       ),
     )
   return row?.n ?? 0
+}
+
+export type IntakeDay = {
+  /** "YYYY-MM-DD" in Asia/Jakarta — see `jakartaDayKey`. */
+  day: string
+  /** Distinct new leads. Duplicates the scraper re-found are not counted here. */
+  count: number
+}
+
+/**
+ * New leads per day over a rolling window, for the intake card.
+ *
+ * Buckets are built in TypeScript rather than with `generate_series` so a day the
+ * scraper did not run comes back as a zero instead of vanishing. A missing day is
+ * a finding — the machine was asleep, or the n8n workflow was not Active — and a
+ * chart that silently closes the gap would hide it.
+ *
+ * Counts leads, not `activities`, so this is distinct businesses: dedupe has
+ * already merged everything the sweep re-found before a row gets here.
+ */
+export async function getDailyIntake(
+  workspaceId: string,
+  days = 7,
+): Promise<IntakeDay[]> {
+  // One extra day of slack on the lower bound: the window is a Jakarta calendar
+  // range and `since` is an instant, so the two edges do not line up exactly.
+  // Buckets outside the window are dropped below.
+  const since = new Date(Date.now() - (days + 1) * 86_400_000)
+
+  const rows = await db
+    .select({
+      day: sql<string>`to_char((${leads.createdAt} at time zone 'Asia/Jakarta')::date, 'YYYY-MM-DD')`,
+      n: count(),
+    })
+    .from(leads)
+    .where(and(eq(leads.workspaceId, workspaceId), gte(leads.createdAt, since)))
+    .groupBy(sql`1`)
+
+  const counts = new Map(rows.map((row) => [row.day, row.n]))
+  const now = Date.now()
+
+  return Array.from({ length: days }, (_, index) => {
+    const day = jakartaDayKey(new Date(now - (days - 1 - index) * 86_400_000))
+    return { day, count: counts.get(day) ?? 0 }
+  })
 }
 
 /** Leads created in the last 30 days, used for the "aktivitas terakhir" hint. */
