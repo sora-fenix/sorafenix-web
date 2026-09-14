@@ -40,6 +40,9 @@ export type RawLead = {
   email?: string | null
   category?: string | null
   sourceUrl?: string | null
+  /** Google Maps rating, 1.0-5.0, as the scraper read it. */
+  rating?: number | null
+  reviewCount?: number | null
 }
 
 /** The same item once every identifier is in canonical form. */
@@ -57,6 +60,8 @@ export type NormalizedLead = {
   email: string | null
   category: string | null
   sourceUrl: string | null
+  rating: number | null
+  reviewCount: number | null
 }
 
 export function normalizeLead(raw: RawLead): NormalizedLead {
@@ -82,7 +87,31 @@ export function normalizeLead(raw: RawLead): NormalizedLead {
     email: normalizeEmail(raw.email),
     category: category === '' ? null : category,
     sourceUrl: sourceUrl === '' ? null : sourceUrl,
+    rating: normalizeRating(raw.rating),
+    reviewCount: normalizeReviewCount(raw.reviewCount),
   }
+}
+
+/**
+ * A rating we are willing to store, or null.
+ *
+ * Out of range is dropped rather than clamped. A 7.3 did not come from Google, so
+ * clamping it to 5.0 would hand the best possible reputation score to the one row
+ * whose data we trust least — and `src/lib/scoring/signals.ts` treats null as
+ * "unknown", which scores neutral. Rounded to one decimal because that is what the
+ * column stores; doing it here means the value the rubric sees and the value the
+ * database holds are the same number.
+ */
+function normalizeRating(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  if (!Number.isFinite(value) || value <= 0 || value > 5) return null
+  return Math.round(value * 10) / 10
+}
+
+function normalizeReviewCount(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  if (!Number.isInteger(value) || value < 0) return null
+  return value
 }
 
 /**

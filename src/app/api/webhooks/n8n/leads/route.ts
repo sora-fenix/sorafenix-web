@@ -42,6 +42,11 @@ const itemSchema = z.object({
   email: z.string().max(320).nullish(),
   category: z.string().max(200).nullish(),
   source_url: z.string().max(2048).nullish(),
+  // Google Maps reputation, the two strongest inputs to lead classification
+  // (src/lib/scoring/signals.ts). Optional: a CSV import has neither, and a
+  // place with no reviews yet legitimately sends neither.
+  rating: z.number().nullish(),
+  review_count: z.number().int().nullish(),
   raw: z.unknown().optional(),
 })
 
@@ -65,6 +70,10 @@ function toIngestItems(payload: Payload): IngestItem[] {
     email: item.email ?? null,
     category: item.category ?? null,
     sourceUrl: item.source_url ?? null,
+    // Range and shape are decided once, in normalizeLead. The schema above only
+    // says "a number arrived".
+    rating: item.rating ?? null,
+    reviewCount: item.review_count ?? null,
     raw: item.raw ?? item,
   }))
 }

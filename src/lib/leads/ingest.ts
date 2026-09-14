@@ -182,6 +182,8 @@ async function insertNewLead(
       website: lead.website,
       industry: lead.category,
       city: lead.city,
+      rating: lead.rating,
+      reviewCount: lead.reviewCount,
       source: input.source,
       sourceUrl: lead.sourceUrl,
       raw: sql`${JSON.stringify(raw)}::jsonb`,
@@ -264,6 +266,10 @@ async function mergeIntoExisting(
   if (existing.website === null && lead.website !== null) filled.website = lead.website
   if (existing.city === null && lead.city !== null) filled.city = lead.city
   if (existing.industry === null && lead.category !== null) filled.industry = lead.category
+  if (existing.rating === null && lead.rating !== null) filled.rating = lead.rating
+  if (existing.reviewCount === null && lead.reviewCount !== null) {
+    filled.reviewCount = lead.reviewCount
+  }
   if (existing.sourceUrl === null && lead.sourceUrl !== null) {
     filled.sourceUrl = lead.sourceUrl
   }
