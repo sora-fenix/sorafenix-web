@@ -2,11 +2,14 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-07 (tenth pass: the scraping week)
+**Last updated:** 2026-09-13 (eleventh pass: deterministic lead classification)
 **Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
 Module 3 scores leads with a weighted rubric and moves them to `qualified`. The
 lead hunter now sweeps a rotating slice of 1500 keyword × city × page combinations
 per day, and `pnpm leads:stats` reads back what it found.
+**All 1208 scraped leads are now classified** by `src/lib/scoring/signals.ts` — a
+second, deterministic rubric that scores what the scrape measured instead of
+asking a model to judge a fit against a product that does not exist yet.
 Slice 3b (CSV upload) is still deferred — see decision 33. Enrichment (3c) is next.
 
 ---
@@ -31,11 +34,12 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 192 tests, 8 files |
+| `pnpm test` | ✅ 252 tests, 9 files |
 | `pnpm build` | ✅ all 18 routes built |
-| `pnpm test:integration` | ✅ 80 tests, 7 files |
+| `pnpm test:integration` | ✅ 92 tests, 8 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
+| `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
 | `pnpm leads:stats` | ✅ real run against `data-riil`: 14 companies, 26 duplicates, saturation visible |
 | `pnpm test:e2e` | ⏸️ written, not run — Playwright browsers still not installed |
 
@@ -1054,6 +1058,118 @@ it will show as a zero in `leads:stats` rather than being backfilled.
 
 ---
 
+## Slice 3d — deterministic lead classification (2026-09-13)
+
+Asked for: score the 1208 scraped petshops on whether each is worth pursuing —
+reviews, location, whether a phone or email exists.
+
+### What the data said before any code was written
+
+Measured against `data-riil` on 2026-09-13, not assumed:
+
+| Signal | Coverage | Verdict |
+|---|---|---|
+| Rating | 1158 / 1208 | present, but barely separates |
+| Review count | 1158 / 1208 | **the strongest discriminator** |
+| City | 1208 / 1208 | present |
+| Category (`industry`) | 1207 / 1208 | present, 51 distinct values |
+| Phone | 1206 / 1208 | near-constant — sorts almost nothing |
+| WhatsApp | 1142 / 1208 | slight |
+| **Email** | **0 / 1208** | **zero discriminating power** |
+| Website | 71 / 1208 | rare, therefore informative |
+| Already scored | 0 / 1208, all `new` | — |
+
+Three of those numbers changed the design:
+
+1. **Email presence cannot be a heavy factor.** Nobody has one. Phone is nearly as
+   useless at 99.8%. A factor every lead scores identically on ranks nothing, so
+   `contactability` carries 20 rather than the 40 it sounds like it deserves.
+2. **Rating alone does not separate.** p25 4.6 · p50 4.8 · p75 5.0. Review count
+   does: p25 6 · p50 21 · p75 77 · p90 221 · max 980. So volume is log-scaled at
+   weight 30, and the rating is stretched over 3.5–5.0 and then confidence-weighted
+   by that volume — 4.6 from 300 reviews outranks 5.0 from two.
+3. **The LLM rubric could not have done this.** `score.ts` hands the model name,
+   industry, city, size band, employee count and description; rating, review count,
+   website and contact channels reach it through no path at all. And `data-riil`
+   has **no `products` row**, so `industry_fit` and `product_need` — half the weight
+   in SPEC §4 — are pinned to neutral for every one of the 1208.
+
+### What shipped
+
+- `src/lib/scoring/signals.ts` — pure, no imports beyond `rubric.ts`, no I/O. Six
+  factors: review volume 30, review quality 20, contactability 20, web presence 15,
+  category fit 10, location 5. Band edges and `NEUTRAL_SCORE` are **imported** from
+  `rubric.ts`, not redefined, so 62 means the same thing whichever rubric wrote it.
+- `src/lib/scoring/classify.ts` — the write side. One transaction per lead, not one
+  per batch: a run over 1208 rows must not lose 1207 good classifications to the
+  1208th, and an interrupted run must leave what it finished committed.
+- `drizzle/0006_sweet_outlaw_kid.sql` — `companies.rating`, `companies.review_count`.
+- `drizzle/0007_backfill_place_signals.sql` — hand-written, idempotent twice over
+  (`where rating is null` plus a numeric-shape guard), backfilling 1158 rows out of
+  `companies.raw`.
+- Ingest carries both fields from the webhook contract to the columns, and the n8n
+  `Build SORA Payload` node now sends them, so no future sweep needs a backfill.
+- `pnpm classify:leads --workspace <slug> [--dry-run] [--reclassify] [--limit N]`.
+- `tests/unit/signals.test.ts` (60 cases) and `tests/integration/classify.test.ts`
+  (12 cases).
+
+**No UI work was needed.** The leads screen already rendered `score`,
+`CategoryBadge` and `scoreReason`, and already ordered by `desc(leads.score)` —
+with every score null it was sorting nothing. It now opens on the strongest
+prospects in the workspace.
+
+### The real run, on real rows
+
+```
+Signal coverage: 1158/1208 rated, 1158/1208 with review counts, 70/1208 with a website
+
+Top:     97 hot  BANG JOEY PETSHOP PANDUGO
+         97 hot  Praktik Dokter Hewan Nusantara Vet
+         96 hot  Hewania SURABAYA 24 JAM | Vet Clinic
+Bottom:  39 cold Toko Plastik SUMBER REJEKI ( Pet Shop )
+         35 cold PT. Charoen Pokphand Indonesia Krian Plant
+
+Classified 1208 lead(s) in 7444ms:  hot 150 · warm 935 · cold 123
+1085 lead(s) moved new → qualified (cold stays new).
+```
+
+Spread across 10-point bins: 4 · 119 · 305 · 293 · 337 · 119 · 31. A real
+distribution, not a spike — the rubric ranks rather than rubber-stamps.
+
+7.4 seconds against the 4–12 hours the same 1208 leads would have taken through
+`score:leads` at 5–37s per model call, and it can be re-run for nothing whenever
+the rubric changes.
+
+The ends of the distribution are the check that matters, and they hold: the top is
+established vet clinics and grooming salons in Surabaya, the bottom is a plastics
+shop with "Pet Shop" in its name and a Charoen Pokphand feed plant — neither of
+which is a petshop retail prospect.
+
+### The bug the unit suite found, which review would not have
+
+`'ikan'` matched inside `Jasa Perba**ikan** Telepon`. A phone repair shop scored a
+perfect 100 on category fit. Substring matching was replaced with a word-boundary
+expression, `peternak` was listed alongside `ternak` because the boundary is at the
+front only, and `String.raw` is now used to build it — `` inside an ordinary
+template literal is the backspace character, which compiles, reads as correct, and
+matches nothing at all.
+
+### What was measured and left alone
+
+**935 of 1208 land in `warm`** (77%), and therefore 1085 of 1208 are now
+`qualified`. The band edges come from SPEC §4 and are shared with the LLM rubric;
+re-tuning them after seeing the output would have been fitting the scale to one
+dataset. The ranking inside the band is what a salesperson actually uses, and that
+is well spread. If `qualified` should be a shorter list, `earnsQualified()` in
+`classify.ts` is one line — see known issue 12.
+
+### Not done here
+
+Enrichment (3c), CSV upload (3b), and any UI control that triggers classification —
+it runs from a command, like `score:leads`.
+
+---
+
 ## Prompt 3 — ingestion + dedupe: readiness assessment (2026-08-26)
 
 Asked: can we start "Prompt 3 — Ingestion + dedupe" (SPEC §2 and §3)?
@@ -1177,13 +1293,18 @@ UI → test), nothing started until the previous slice is green.
    Day-slice rotation in n8n, `pnpm leads:stats`, and the intake card. Owner
    decision, taken ahead of 3c: qualification is worth more against a few hundred
    leads than against fourteen. The week itself still has to be *run*.
-8. **Slice 3c — enrichment worker.** ← *next, after the week.* pg-boss, `/api/cron/tick`, `enrich_company`.
+8. ~~**Slice 3d — deterministic lead classification.**~~ — **done 2026-09-13.**
+   `src/lib/scoring/signals.ts` ranks all 1208 scraped leads on review volume,
+   rating, contactability, web presence, category and city, with no model. Taken
+   ahead of 3c because the question the owner asked — "which of these petshops is
+   worth pursuing" — was answerable from columns that already existed.
+9. **Slice 3c — enrichment worker.** ← *next.* pg-boss, `/api/cron/tick`, `enrich_company`.
    Worth reshaping first: SPEC §3 fetches websites, and every company scraped so
    far has none. The enrichment data for this segment is already in
    `companies.raw` — rating, review count, category, `maps_cid` from Serper.
-9. **Slice 3b — CSV upload.** Deferred, not dropped. Parser approved; XLSX dropped.
-10. **Module 5 + approvals** — content generation with `needs_input` gating.
-11. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
+10. **Slice 3b — CSV upload.** Deferred, not dropped. Parser approved; XLSX dropped.
+11. **Module 5 + approvals** — content generation with `needs_input` gating.
+12. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
     there is never a code path that sends without it.
 
 ## Blocked
@@ -1304,10 +1425,35 @@ setup in `docs/n8n-integration.md`.
    regression and is not one. Any demo should be either all-seeded or all-scored,
    not a mixture.
 
-11. **`data-riil` cannot be scored yet.** It has no product row, so kesesuaian
-   industri and kebutuhan produk would both be 50 by construction and the ranking
-   would be noise. `pnpm product:create` exists for it; what it sells to those pet
-   shops is a business decision the owner has not made.
+11. **`data-riil` cannot be scored by the *LLM* rubric yet.** It has no product row,
+   so kesesuaian industri and kebutuhan produk would both be 50 by construction and
+   the ranking would be noise. `pnpm product:create` exists for it; what it sells to
+   those pet shops is a business decision the owner has not made. **Partly answered
+   2026-09-13** — `signals.ts` ranks the same leads without a product, because it
+   judges the business rather than the fit. The fit question is still open.
+12. **`qualified` now covers 1085 of 1208 leads (90%).** `hot` + `warm` earn the
+   status, and 77% of the population lands in `warm` because the SPEC §4 band floor
+   is 50 and most scraped petshops clear it. The ranking inside the band is sound,
+   but as a *status* the word has lost most of its filtering value in this
+   workspace. One line in `earnsQualified()` (`src/lib/scoring/classify.ts`) makes
+   it hot-only; that is an owner call, not a bug fix, and the band edges themselves
+   come from SPEC and are shared with the LLM rubric.
+13. **Review counts go stale and nothing refreshes them.** `mergeIntoExisting` fills
+   blanks only, so a re-scrape that finds 150 reviews where we stored 37 leaves the
+   old number — correct for a field a human may have corrected, wrong for a counter
+   that only grows. Classification therefore drifts downward over time. Refresh
+   belongs to enrichment (slice 3c), which is the job that owns re-reading a row.
+14. **The n8n workflow change is committed but not imported.** `Build SORA Payload`
+   now sends `rating` and `review_count`; the running `sora_n8n` container still has
+   the previous copy. Until it is re-imported, new leads arrive with both columns
+   null and score neutral on the two heaviest factors. Re-running
+   `drizzle/0007` is *not* a fix — it reads `raw`, which new rows will still carry,
+   but a re-import is the correct one.
+15. **`companies.raw` stores the live `N8N_WEBHOOK_SECRET` in plaintext, on all 1208
+   rows.** `Build SORA Payload` copies the whole n8n item — which by then carries the
+   `SORA Config` fields — into `raw`. One distinct value, still valid. Not touched in
+   this slice: it needs a secret rotation plus `raw = raw - 'webhook_secret'` plus the
+   node fix, and that is an incident, not a feature. **Owner action required.**
 
 ---
 
@@ -1363,6 +1509,11 @@ setup in `docs/n8n-integration.md`.
 | 46 | `companies.city` comes from the scraped **address**, not from the search term | Kecamatan-level search terms ('Rungkut Surabaya') would have been stored as the city, and the same shop found under a second term would then miss the `fuzzy_name_city` strategy. Phone and domain still caught it, so this was closing a residual hole before the wide sweep opened it. The search term is kept in `raw`: provenance, not identity. |
 | 47 | The daily intake chart keeps its **gaps** instead of closing them | A day with no leads during the scraping week is a finding — the laptop was asleep, or the workflow was not Active — and n8n does not catch up a missed schedule. Buckets are therefore built in TypeScript rather than by `group by`, so a quiet day is a zero rather than an absent row. A chart that interpolated over it would report a lie by omission. |
 | 48 | An empty Serper result must not end the sweep | `Send to SORA` is the node that loops back into `Loop Over Searches`, so a chain that produces no items leaves the loop unadvanced and the day's remaining searches unrun. Roughly one query in eight returns `places: []` for no reason — measured, and the same query answered normally an hour later — so this was not an edge case but the common path. `Extract Contacts` runs with alwaysOutputData and `Build SORA Payload` always returns one item; an empty batch is posted and SORA answers `accepted: 0`. Neither is tidy, and neither may be removed. |
+| 49 | A **second, deterministic rubric** rather than feeding the signals to the model | Owner decision, 2026-09-13. The factors asked for — reviews, location, whether a number exists — are all facts in columns, and a model adds latency, cost and non-determinism to arithmetic. 1208 leads in 7.4s against 4–12 hours. It also sidesteps the blocker in known issue 11: `signals.ts` judges the business, so it needs no `products` row, where the LLM rubric pins half its weight to neutral without one. The LLM rubric is not replaced — it answers a different question (fit against what we sell) and takes over when a product exists. |
+| 50 | Band edges and `NEUTRAL_SCORE` are imported from `rubric.ts`, never redefined | Two rubrics now write `leads.score`. If each owned its own definition of "hot", the column would mean two different things depending on who wrote the row, and no screen could sort them together. What each rubric owns is its *factors*; what they share is the scale. |
+| 51 | The `activities` payload names the rubric (`rubric: 'signals_v1'`), and the actor is `system`, not `ai` | Same reason, one layer down: a 62 from signals and a 62 from the model are indistinguishable in the trail without it. `system` because no model was asked anything — calling it `ai` would make `ai_runs` and the activity trail disagree about whether a call happened. |
+| 52 | Only `hot` and `warm` earn `qualified`; `cold` stays `new` | `score.ts` moves every scored lead to `qualified` regardless of band, which is defensible for a dozen hand-picked leads and wrong for 1208 scraped ones. Measured afterwards: this still qualifies 1085 of 1208, because 77% land in `warm` — see known issue 12. The band edges were left alone rather than re-tuned to produce a prettier split, which would have been fitting the scale to one dataset after seeing its output. |
+| 53 | `rating` and `review_count` are real columns, not a `raw` jsonb lookup | `raw` is keyed by the Indonesian sheet headers one n8n node happens to emit (`'Jumlah Review'`), so reading the rubric's two heaviest inputs from there would tie scoring to a scraper's presentation format, and jsonb text cannot be indexed or range-queried. The migration backfills 1158 existing rows out of `raw`; the webhook contract and the n8n payload carry both fields going forward. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

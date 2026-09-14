@@ -128,6 +128,37 @@ Store `score`, `category`, `score_factors` (each factor: score, weight, evidence
 
 Any factor whose evidence is not grounded in stored data must score 50 (neutral), not be guessed upward.
 
+### 4b. Signal classification — the deterministic rubric
+
+`src/lib/scoring/signals.ts` — no model, for leads whose value is already measured
+by the scrape rather than inferred from a product fit.
+
+| Factor | Weight | Read from |
+|---|---|---|
+| Review volume | 30 | `companies.review_count`, log-scaled, saturating at 250 |
+| Review quality | 20 | `companies.rating`, stretched over 3.5–5.0 and confidence-weighted by volume |
+| Contactability | 20 | `contacts.whatsapp` > `contacts.phone` > `contacts.email` |
+| Web presence | 15 | `companies.domain` / `companies.website` |
+| Category fit | 10 | `companies.industry`, animal-business keyword match at a word boundary |
+| Location | 5 | `companies.city` |
+
+Same bands, same columns written, same audit obligation as §4. Two things differ:
+
+- **Nothing is asked of a model**, so there is no `ai_runs` row, no retry and no
+  timeout — and a re-run of the same data returns the same number.
+- **`actor` is `system`, not `ai`**, and the `activities` payload carries
+  `rubric: 'signals_v1'`. Both rubrics write `leads.score` on one 0–100 scale from
+  different evidence; without that key a score cannot be traced to its origin.
+
+Which rubric applies is a property of the data, not a setting. §4 needs a
+`products` row to mean anything — with none, `industry_fit` and `product_need`
+(half the weight) are pinned to neutral. §4b needs only what the scrape recorded.
+
+Band edges, `NEUTRAL_SCORE`, and the rule that an ungrounded factor scores 50 are
+defined once, in `rubric.ts`, and imported. They must not be redefined per rubric.
+
+Only `hot` and `warm` earn `qualified`; `cold` stays `new`.
+
 ---
 
 ## 5. Module 5 — AI Content Generator
