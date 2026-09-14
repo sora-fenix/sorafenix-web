@@ -22,6 +22,7 @@
     "db:seed": "tsx scripts/seed.ts",
     "ai:smoke": "tsx --conditions=react-server scripts/ai-smoke.ts",
     "score:leads": "tsx --conditions=react-server scripts/score-leads.ts",
+    "classify:leads": "tsx --conditions=react-server scripts/classify-leads.ts",
     "leads:stats": "tsx scripts/lead-stats.ts",
     "workspace:create": "tsx scripts/create-workspace.ts",
     "campaign:create": "tsx scripts/create-campaign.ts",
