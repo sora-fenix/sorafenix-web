@@ -3,6 +3,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   text,
@@ -122,6 +123,20 @@ export const companies = pgTable(
     sizeBand: text('size_band'),
     employeeCount: integer('employee_count'),
     description: text('description'),
+    /**
+     * Google Maps rating, 1.0-5.0, as returned by Serper /places.
+     *
+     * A column rather than a `raw` lookup because `src/lib/scoring/signals.ts`
+     * classifies on it: a jsonb path keyed by an Indonesian sheet header
+     * ("Jumlah Review") would tie the scoring rubric to the shape one n8n node
+     * happens to emit today, and it cannot be indexed or range-queried.
+     *
+     * `mode: 'number'` so this arrives as a number, not the string numeric
+     * columns otherwise produce — the rubric does arithmetic on it.
+     */
+    rating: numeric('rating', { precision: 2, scale: 1, mode: 'number' }),
+    /** How many reviews that rating rests on. 4.6 over 300 outranks 5.0 over 2. */
+    reviewCount: integer('review_count'),
     source: text('source'),
     sourceUrl: text('source_url'),
     /** Untouched payload as it arrived from n8n, for debugging and re-processing. */

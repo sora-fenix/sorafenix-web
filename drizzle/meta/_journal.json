@@ -43,6 +43,20 @@
       "when": 1787755132631,
       "tag": "0005_pg_trgm",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789282634181,
+      "tag": "0006_sweet_outlaw_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789282635181,
+      "tag": "0007_backfill_place_signals",
+      "breakpoints": true
     }
   ]
 }
