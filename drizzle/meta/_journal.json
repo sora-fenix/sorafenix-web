@@ -57,6 +57,13 @@
       "when": 1789282635181,
       "tag": "0007_backfill_place_signals",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789282636181,
+      "tag": "0008_scrub_leaked_webhook_secret",
+      "breakpoints": true
     }
   ]
 }

@@ -1444,16 +1444,33 @@ setup in `docs/n8n-integration.md`.
    that only grows. Classification therefore drifts downward over time. Refresh
    belongs to enrichment (slice 3c), which is the job that owns re-reading a row.
 14. **The n8n workflow change is committed but not imported.** `Build SORA Payload`
-   now sends `rating` and `review_count`; the running `sora_n8n` container still has
-   the previous copy. Until it is re-imported, new leads arrive with both columns
-   null and score neutral on the two heaviest factors. Re-running
-   `drizzle/0007` is *not* a fix — it reads `raw`, which new rows will still carry,
-   but a re-import is the correct one.
-15. **`companies.raw` stores the live `N8N_WEBHOOK_SECRET` in plaintext, on all 1208
-   rows.** `Build SORA Payload` copies the whole n8n item — which by then carries the
-   `SORA Config` fields — into `raw`. One distinct value, still valid. Not touched in
-   this slice: it needs a secret rotation plus `raw = raw - 'webhook_secret'` plus the
-   node fix, and that is an incident, not a feature. **Owner action required.**
+   now sends `rating` and `review_count`, and no longer copies the webhook secret
+   into `raw`; the running `sora_n8n` container still has the previous copy. Until
+   it is re-imported, new leads arrive with both columns null, score neutral on the
+   two heaviest factors, **and keep writing the secret back into `raw`**. Re-running
+   `drizzle/0007` is *not* a fix — it reads `raw`, which new rows will still carry —
+   and neither is re-running `0008`. A re-import is the fix, and it pairs with the
+   rotation in issue 15.
+15. **The live `N8N_WEBHOOK_SECRET` was stored in plaintext, and the database half is
+   now cleaned.** Root cause: `SORA Config` is a Set node with `includeOtherFields`,
+   so it stamped its own assignments — including the secret — onto **every** item
+   passing through, and `Build SORA Payload` copied the whole item into `raw`.
+   Blast radius was wider than first reported: 1208 of 1208 `companies.raw` **and
+   669 of 855 `webhook_events.payload`**, one distinct value.
+   Done 2026-09-14: `drizzle/0008_scrub_leaked_webhook_secret.sql` removed the key
+   from both tables (verified 0 remaining, 6087 stored items otherwise intact), and
+   the node now strips `CONFIG_KEYS` before writing `raw`.
+   **Still open, and it is the half that matters: the secret must be rotated.**
+   Deleting the value does not un-leak it — it was readable to anything with
+   database access, and to any backup taken during the scraping week. Rotation is
+   owner action, in this order:
+   1. generate a new value and set `N8N_WEBHOOK_SECRET` in `.env.local`;
+   2. set `SORA_WEBHOOK_SECRET` on the `sora_n8n` container and restart it
+      (`pnpm n8n:stop && pnpm n8n:start`);
+   3. re-import the workflow (this also closes known issue 14);
+   4. run one sweep and confirm SORA answers `accepted`, not `invalid_signature`.
+   Both sides must change together — the HMAC is verified over the raw body, so a
+   mismatched pair fails every delivery.
 
 ---
 
