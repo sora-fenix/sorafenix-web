@@ -185,6 +185,34 @@ Single entry point: `sendMessage({ messageId, idempotencyKey })` → calls `send
 
 Rate limits enforced by workspace: `daily_email_limit`, `daily_wa_limit`, plus max 1 message per contact per 24h across all channels.
 
+### 6a. The send guard
+
+`src/lib/outreach/send-guard.ts` decides; `src/lib/outreach/send-context.ts` loads.
+A sender calls `guardSend({ workspaceId, messageId, now })` and gets a `Result` —
+it never throws and never sends. Checks run in this order, first failure wins:
+
+| # | Check | Refuses when | `retryAt` |
+|---|---|---|---|
+| 1 | `suppression` | `contacts.opt_out_at` is set, or any of the contact's email, phone, WhatsApp, company domain or email domain is in `suppressions` — on **any** channel | never |
+| 2 | `daily_limit` | outbound sent or queued today on this channel ≥ the workspace limit; "today" is the **workspace's** day | workspace midnight |
+| 3 | `cooldown` | an outbound message sent or queued to the same contact within 24h, any channel | last send + 24h |
+| 4 | `duplicate` | same campaign, same channel, same address, same template (WhatsApp) or subject (email), already sent or queued | never |
+| 5 | `approval` | status is not `approved` or `queued`, or the message is inbound | never |
+| 6 | `quiet_hours` | outside 08:00–17:00 Monday–Friday in the **lead's** local time | next open 15-minute boundary |
+
+Then `no_recipient` if the channel has no usable address. WhatsApp goes only to the
+`whatsapp` column and only to a mobile number, never to `phone`.
+
+**The lead's timezone** is derived from `companies.city` and `companies.country`.
+A known city resolves to its zone. An Indonesian lead in an unknown city must be
+inside business hours in **all three** Indonesian zones at once (effectively
+08:00–15:00 WIB). A lead outside Indonesia, or with neither a known city nor a
+country, is refused — the workspace timezone is never used as a fallback.
+
+**It fails closed.** Any error loading the context returns `guard_failed`.
+
+`workspaces.autonomous_mode` is not read by the guard.
+
 ---
 
 ## 7. Module 8 — Follow-up sequences

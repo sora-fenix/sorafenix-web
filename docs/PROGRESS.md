@@ -2,7 +2,7 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-13 (eleventh pass: deterministic lead classification)
+**Last updated:** 2026-09-15 (twelfth pass: the send guard)
 **Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
 Module 3 scores leads with a weighted rubric and moves them to `qualified`. The
 lead hunter now sweeps a rotating slice of 1500 keyword × city × page combinations
@@ -10,7 +10,10 @@ per day, and `pnpm leads:stats` reads back what it found.
 **All 1208 scraped leads are now classified** by `src/lib/scoring/signals.ts` — a
 second, deterministic rubric that scores what the scrape measured instead of
 asking a model to judge a fit against a product that does not exist yet.
-Slice 3b (CSV upload) is still deferred — see decision 33. Enrichment (3c) is next.
+**The send guard exists** — every one of its six checks is proven against real
+Postgres — and still nothing can send, deliberately: the guard came before any
+adapter so there is never a path around it.
+Slice 3b (CSV upload) is still deferred — see decision 33.
 
 ---
 
@@ -34,9 +37,9 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 252 tests, 9 files |
+| `pnpm test` | ✅ 320 tests, 10 files |
 | `pnpm build` | ✅ all 18 routes built |
-| `pnpm test:integration` | ✅ 92 tests, 8 files |
+| `pnpm test:integration` | ✅ 114 tests, 9 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -1058,6 +1061,69 @@ it will show as a zero in `leads:stats` rather than being backfilled.
 
 ---
 
+## Slice — the send guard (2026-09-15)
+
+Asked for: the send guard, first, before Module 5 or enrichment — it needs no
+business decision and must exist before anything that can send.
+
+### What shipped
+
+- `src/lib/outreach/send-guard.ts` — pure. `evaluateSend(context, now)` runs six
+  checks in the order `.claude/rules/outreach.md` lists and returns the first
+  failure: suppression · daily_limit · cooldown · duplicate · approval ·
+  quiet_hours, then `no_recipient`. Every rejection carries a Bahasa Indonesia
+  reason and a `retryAt` (null when waiting cannot help).
+- `src/lib/outreach/send-context.ts` — `guardSend({ workspaceId, messageId, now })`,
+  the call a sender makes. Loads the context with every query filtered by
+  `workspace_id`, joins included, and **fails closed**: any load error returns
+  `guard_failed`.
+- `tests/unit/send-guard.test.ts` (68 cases) and `tests/integration/send-guard.test.ts`
+  (22 cases).
+- **No schema change.** Every check was already backed by a column: `suppressions`,
+  `contacts.opt_out_at`, `workspaces.daily_*_limit`, `messages.status`, the
+  `(workspace, lead, created_at)` index, `leads.campaign_id`.
+- **No new dependency.** Node 24's ICU resolves all three Indonesian zones; no
+  `luxon`, no `date-fns-tz`.
+
+### A correction to the approved plan
+
+The plan said the pure evaluator and the database loader would live in one file,
+`send-guard.ts`, so the unit tests would cover the file `testing.md` names. That
+cannot work: a file importing `server-only` and the Drizzle handle cannot be loaded
+by the unit suite at all — `policy.ts` already records exactly this. So the split
+is the `policy`/`agent` one: `send-guard.ts` is the pure, unit-tested file, and
+`send-context.ts` is the I/O half. `.claude/rules/structure.md` still lists
+`outreach/ send-guard.ts email.ts whatsapp.ts` and does not mention the new file.
+
+### The bug the integration suite found
+
+Every query passed a `Date` into a raw `sql` template. Drizzle's column mapping
+does not apply there, so the value went out as `String(date)` — "Mon Sep 14 2026
+10:00:00 GMT+0700 (Western Indonesia Time)" — and Postgres rejected it. 20 of 22
+integration tests came back `guard_failed`: the fail-closed path doing its job, and
+the only reason a broken loader did not read as a permissive one. Timestamps now go
+out as ISO strings and come back as epoch seconds rather than `::text`, whose
+"2026-09-14 17:00:00+00" shape `new Date()` is not obliged to accept.
+
+### Proving the tests have teeth
+
+Two mutations, both reverted:
+
+- swapping `suppression` and `daily_limit` in `SEND_CHECKS` fails the two order
+  tests;
+- dropping `workspace_id` from the suppression lookup fails the tenant-isolation
+  test.
+
+### Owner decisions taken on the way
+
+- **The 1142 scraped WhatsApp numbers are business contacts.** Every one is a
+  `+628` mobile taken from the business's own Google Maps listing, where the
+  business published it as its contact number. Decision 57.
+- **The next slice was the guard rather than enrichment** (decision 54), and
+  `qualified` stays hot + warm (decision 52).
+
+---
+
 ## Slice 3d — deterministic lead classification (2026-09-13)
 
 Asked for: score the 1208 scraped petshops on whether each is worth pursuing —
@@ -1304,8 +1370,14 @@ UI → test), nothing started until the previous slice is green.
    `companies.raw` — rating, review count, category, `maps_cid` from Serper.
 10. **Slice 3b — CSV upload.** Deferred, not dropped. Parser approved; XLSX dropped.
 11. **Module 5 + approvals** — content generation with `needs_input` gating.
-12. **`src/lib/outreach/send-guard.ts`** — before any provider adapter exists, so
-    there is never a code path that sends without it.
+12. ~~**`src/lib/outreach/send-guard.ts`**~~ — **done 2026-09-15.** Brought forward
+    ahead of 3c and Module 5 by owner decision: it needs no business decision, and
+    it has to exist before any adapter does. Six checks in order, pure and
+    unit-tested, loaded by `send-context.ts` and proven against real Postgres.
+13. **Next: Module 5 + approvals** — blocked on a business decision, not on code.
+    `data-riil` has no `products` row and no `knowledge_docs`, so under rule 3 every
+    draft would come out `needs_input` with an empty body. What SORA sells to these
+    petshops is the owner's to write down; `pnpm product:create` takes it from there.
 
 ## Blocked
 
@@ -1471,6 +1543,25 @@ setup in `docs/n8n-integration.md`.
    4. run one sweep and confirm SORA answers `accepted`, not `invalid_signature`.
    Both sides must change together — the HMAC is verified over the raw body, so a
    mismatched pair fails every delivery.
+16. **The daily limit can be overshot by concurrent senders.** `guardSend` counts,
+   then the caller sends; two workers judging at the same moment can both see 99 of
+   100. Harmless with one sequential runner and wrong with two. The fix is to claim
+   quota inside the send transaction (or `FOR UPDATE SKIP LOCKED` on the queue),
+   which belongs to the queue slice, not to a pure guard.
+17. **Cooldown is keyed by contact row, not by address.** Two contact rows with the
+   same WhatsApp number are two people to the cooldown. Ingest dedupe normally merges
+   them by phone before this can happen, and the duplicate check still catches the
+   same template twice, but a *different* message to the same number through a
+   second contact row inside 24h would pass.
+18. **The guard does not know the WhatsApp 24-hour customer-service window.**
+   Outside it, Cloud API accepts template messages only; that is channel mechanics
+   and belongs to the WhatsApp adapter, which does not exist yet. Nothing sends, so
+   nothing is violated today.
+19. **Quiet hours ignore Indonesian public holidays**, and the 08:00–17:00
+   Monday–Friday window is an assumption the owner has not confirmed — many petshops
+   trade on Saturday. Both are one constant in `send-guard.ts`.
+20. **`campaigns.daily_cap` is not enforced.** The rules name the workspace limit;
+   the per-campaign cap in the schema has no reader yet.
 
 ---
 
@@ -1531,6 +1622,11 @@ setup in `docs/n8n-integration.md`.
 | 51 | The `activities` payload names the rubric (`rubric: 'signals_v1'`), and the actor is `system`, not `ai` | Same reason, one layer down: a 62 from signals and a 62 from the model are indistinguishable in the trail without it. `system` because no model was asked anything — calling it `ai` would make `ai_runs` and the activity trail disagree about whether a call happened. |
 | 52 | Only `hot` and `warm` earn `qualified`; `cold` stays `new` | `score.ts` moves every scored lead to `qualified` regardless of band, which is defensible for a dozen hand-picked leads and wrong for 1208 scraped ones. Measured afterwards: this still qualifies 1085 of 1208, because 77% land in `warm` — see known issue 12. The band edges were left alone rather than re-tuned to produce a prettier split, which would have been fitting the scale to one dataset after seeing its output. |
 | 53 | `rating` and `review_count` are real columns, not a `raw` jsonb lookup | `raw` is keyed by the Indonesian sheet headers one n8n node happens to emit (`'Jumlah Review'`), so reading the rubric's two heaviest inputs from there would tie scoring to a scraper's presentation format, and jsonb text cannot be indexed or range-queried. The migration backfills 1158 existing rows out of `raw`; the webhook contract and the n8n payload carry both fields going forward. |
+| 54 | The send guard came **before** enrichment (3c) and Module 5 | Owner decision, 2026-09-15. Enrichment fetches websites and only 71 of 1208 leads have one; Module 5 is blocked on a `products` row nobody has written. The guard needed no business decision, and the rules require it to exist before any adapter so no send path can predate it. |
+| 55 | `send-guard.ts` is pure; `send-context.ts` loads | Planned as one file, split on contact with reality: the unit suite cannot import a file that imports `server-only` and Drizzle. The third `policy`/`agent`-shaped split. There is still one guard — the loader decides nothing, and every verdict comes from `evaluateSend`. |
+| 56 | An Indonesian lead in an unknown city must be inside business hours in **all three** zones; outside Indonesia the guard refuses | `.claude/rules/outreach.md` says the lead's local time, not the workspace's, so falling back to `workspaces.timezone` is exactly the forbidden move. Intersecting WIB, WITA and WIT costs two hours of window and can never wake anyone; refusing a lead we cannot place at all is the only answer that cannot be wrong at 03:00. |
+| 57 | Scraped `+628` WhatsApp numbers from a business's own Google Maps listing are **business contacts** | Owner decision, 2026-09-15. `.claude/rules/outreach.md` permits business contacts only and treats an unclear source as personal. These numbers were published by the business as its public contact channel, which is the lawful basis recorded here. Opt-out, quiet hours, cooldown and the daily limit still apply on top. |
+| 58 | The guard fails closed | A dropped connection or an invalid workspace timezone returns `guard_failed`, never an allowed send. The integration suite showed why this matters on its first run: a broken loader produced 20 refusals, not 20 sends. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
