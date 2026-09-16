@@ -45,6 +45,7 @@ const STATUS_LABELS: Readonly<Record<string, string>> = {
 export const LEAD_EXPORT_COLUMNS: readonly CsvColumn<LeadExportRow>[] = [
   { header: 'Nama Usaha', cell: (row) => textCell(row.companyName) },
   { header: 'Kategori Usaha', cell: (row) => textCell(row.industry) },
+  { header: 'Alamat', cell: (row) => textCell(row.address) },
   { header: 'Kota', cell: (row) => textCell(row.city) },
   { header: 'Rating', cell: (row) => numberCell(row.rating) },
   { header: 'Jumlah Review', cell: (row) => numberCell(row.reviewCount) },

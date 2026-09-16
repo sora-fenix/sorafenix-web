@@ -31,8 +31,9 @@ let otherWorkspaceId: string
 async function seedLeads(workspace: string, count: number, prefix: string): Promise<void> {
   for (let i = 0; i < count; i += 1) {
     const [company] = await sql<{ id: string }[]>`
-      insert into companies (workspace_id, name, city, country)
-      values (${workspace}, ${`${prefix} ${String(i).padStart(2, '0')}`}, 'Surabaya', 'ID')
+      insert into companies (workspace_id, name, address, city, country)
+      values (${workspace}, ${`${prefix} ${String(i).padStart(2, '0')}`},
+              ${`Jl. Contoh No. ${String(i)}`}, 'Surabaya', 'ID')
       returning id`
     if (company === undefined) throw new Error('company fixture failed')
 
@@ -166,6 +167,7 @@ describe('the CSV export query', () => {
     expect(row).toBeDefined()
     if (row === undefined) return
     expect(row.whatsapp).toMatch(/^\+62/)
+    expect(row.address).toMatch(/^Jl\. Contoh No\./)
     expect(row.score).toBe(70)
     expect(row.status).toBe('qualified')
     expect(row.createdAt).toBeInstanceOf(Date)

@@ -22,6 +22,13 @@ const dateTimeFormatter = new Intl.DateTimeFormat('id-ID', {
 
 const numberFormatter = new Intl.NumberFormat('id-ID')
 
+// Always one decimal, so a column of ratings lines up: 5 reads as "5,0" beside
+// "4,7" rather than jumping a character width.
+const ratingFormatter = new Intl.NumberFormat('id-ID', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+})
+
 const dayKeyFormatter = new Intl.DateTimeFormat('en-CA', {
   year: 'numeric',
   month: '2-digit',
@@ -48,6 +55,11 @@ export function formatDateTime(value: Date | null): string {
 
 export function formatNumber(value: number): string {
   return numberFormatter.format(value)
+}
+
+/** A Google Maps rating in Indonesian notation: 4.7 renders as "4,7". */
+export function formatRating(value: number): string {
+  return ratingFormatter.format(value)
 }
 
 export function formatPercent(ratio: number): string {

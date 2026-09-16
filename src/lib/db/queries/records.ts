@@ -127,6 +127,7 @@ export const EXPORT_MAX_ROWS = 20_000
 export type LeadExportRow = {
   companyName: string | null
   industry: string | null
+  address: string | null
   city: string | null
   rating: number | null
   reviewCount: number | null
@@ -149,6 +150,7 @@ export async function exportLeads(workspaceId: string): Promise<LeadExportRow[]>
     .select({
       companyName: companies.name,
       industry: companies.industry,
+      address: companies.address,
       city: companies.city,
       rating: companies.rating,
       reviewCount: companies.reviewCount,
@@ -183,7 +185,10 @@ export type CompanyRow = {
   name: string
   domain: string | null
   industry: string | null
+  address: string | null
   city: string | null
+  rating: number | null
+  reviewCount: number | null
   sizeBand: string | null
   employeeCount: number | null
   source: string | null
@@ -204,7 +209,10 @@ export async function listCompanies(
       name: companies.name,
       domain: companies.domain,
       industry: companies.industry,
+      address: companies.address,
       city: companies.city,
+      rating: companies.rating,
+      reviewCount: companies.reviewCount,
       sizeBand: companies.sizeBand,
       employeeCount: companies.employeeCount,
       source: companies.source,

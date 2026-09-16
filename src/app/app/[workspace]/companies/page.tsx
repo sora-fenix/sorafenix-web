@@ -14,7 +14,7 @@ import {
 import { Pagination } from '@/components/layout/pagination'
 import { getWorkspaceContext } from '@/lib/auth/session'
 import { listCompanies } from '@/lib/db/queries/records'
-import { formatNumber } from '@/lib/format'
+import { formatNumber, formatRating } from '@/lib/format'
 import { pageRequest } from '@/lib/pagination'
 
 export const metadata: Metadata = { title: navItem('companies').label }
@@ -60,8 +60,10 @@ export default async function CompaniesPage({ params, searchParams }: PageProps)
             <TableRow>
               <TableHead>Perusahaan</TableHead>
               <TableHead className="hidden md:table-cell">Industri</TableHead>
+              <TableHead className="hidden lg:table-cell">Alamat</TableHead>
               <TableHead className="hidden sm:table-cell">Kota</TableHead>
-              <TableHead className="hidden lg:table-cell">Ukuran</TableHead>
+              <TableHead className="hidden xl:table-cell text-right">Reputasi</TableHead>
+              <TableHead className="hidden xl:table-cell">Ukuran</TableHead>
               <TableHead className="text-right">Kontak</TableHead>
               <TableHead className="hidden lg:table-cell">Sumber</TableHead>
             </TableRow>
@@ -78,10 +80,30 @@ export default async function CompaniesPage({ params, searchParams }: PageProps)
                 <TableCell className="hidden max-w-[12rem] truncate md:table-cell">
                   {company.industry ?? '—'}
                 </TableCell>
+                <TableCell
+                  className="text-muted-foreground hidden max-w-[18rem] text-sm lg:table-cell"
+                  title={company.address ?? undefined}
+                >
+                  <span className="block truncate">{company.address ?? '—'}</span>
+                </TableCell>
                 <TableCell className="hidden sm:table-cell">
                   {company.city ?? '—'}
                 </TableCell>
-                <TableCell className="text-muted-foreground hidden text-sm lg:table-cell">
+                <TableCell className="hidden text-right text-sm tabular-nums xl:table-cell">
+                  {company.rating === null ? (
+                    '—'
+                  ) : (
+                    <>
+                      {formatRating(company.rating)}
+                      <span className="text-muted-foreground">
+                        {company.reviewCount === null
+                          ? ''
+                          : ` (${formatNumber(company.reviewCount)})`}
+                      </span>
+                    </>
+                  )}
+                </TableCell>
+                <TableCell className="text-muted-foreground hidden text-sm xl:table-cell">
                   {company.sizeBand ?? '—'}
                   {company.employeeCount === null
                     ? ''
