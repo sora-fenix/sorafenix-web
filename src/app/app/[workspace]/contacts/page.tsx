@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { EmailStatusBadge } from '@/components/crm/labels'
-import { navItem } from '@/components/layout/nav-items'
+import { navItem, workspaceHref } from '@/components/layout/nav-items'
 import { EmptyState, PageShell } from '@/components/layout/page-shell'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -13,21 +13,29 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Pagination } from '@/components/layout/pagination'
 import { getWorkspaceContext } from '@/lib/auth/session'
 import { listContacts } from '@/lib/db/queries/records'
 import { formatDate, formatNumber } from '@/lib/format'
+import { pageRequest } from '@/lib/pagination'
 
 export const metadata: Metadata = { title: navItem('contacts').label }
 
-type PageProps = { params: Promise<{ workspace: string }> }
+type PageProps = {
+  params: Promise<{ workspace: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}
 
-export default async function ContactsPage({ params }: PageProps) {
+export default async function ContactsPage({ params, searchParams }: PageProps) {
   const { workspace: slug } = await params
+  const query = await searchParams
   const context = await getWorkspaceContext(slug)
   if (context === null) notFound()
 
   const item = navItem('contacts')
-  const rows = await listContacts(context.workspace.id)
+  const page = await listContacts(context.workspace.id, pageRequest(query.page))
+  const rows = page.rows
+  const basePath = workspaceHref(slug, 'contacts')
 
   if (rows.length === 0) {
     return (
@@ -47,7 +55,7 @@ export default async function ContactsPage({ params }: PageProps) {
   return (
     <PageShell title={item.label} description={item.description}>
       <p className="text-muted-foreground mb-3 text-sm">
-        {formatNumber(rows.length)} kontak bisnis
+        {formatNumber(page.total)} kontak bisnis
         {optedOut === 0
           ? '.'
           : `, ${formatNumber(optedOut)} di antaranya sudah menolak dihubungi.`}
@@ -113,6 +121,8 @@ export default async function ContactsPage({ params }: PageProps) {
         Kontak yang menolak dihubungi otomatis masuk daftar suppression dan
         dilewati sebelum setiap pengiriman, bukan hanya saat kampanye disusun.
       </p>
+      <Pagination page={page} basePath={basePath} noun="kontak" />
+
     </PageShell>
   )
 }

@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { CampaignStatusBadge } from '@/components/crm/labels'
-import { navItem } from '@/components/layout/nav-items'
+import { navItem, workspaceHref } from '@/components/layout/nav-items'
 import { EmptyState, PageShell } from '@/components/layout/page-shell'
 import {
   Table,
@@ -12,21 +12,29 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Pagination } from '@/components/layout/pagination'
 import { getWorkspaceContext } from '@/lib/auth/session'
 import { listCampaigns } from '@/lib/db/queries/records'
 import { formatDate, formatNumber } from '@/lib/format'
+import { pageRequest } from '@/lib/pagination'
 
 export const metadata: Metadata = { title: navItem('campaigns').label }
 
-type PageProps = { params: Promise<{ workspace: string }> }
+type PageProps = {
+  params: Promise<{ workspace: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}
 
-export default async function CampaignsPage({ params }: PageProps) {
+export default async function CampaignsPage({ params, searchParams }: PageProps) {
   const { workspace: slug } = await params
+  const query = await searchParams
   const context = await getWorkspaceContext(slug)
   if (context === null) notFound()
 
   const item = navItem('campaigns')
-  const rows = await listCampaigns(context.workspace.id)
+  const page = await listCampaigns(context.workspace.id, pageRequest(query.page))
+  const rows = page.rows
+  const basePath = workspaceHref(slug, 'campaigns')
 
   if (rows.length === 0) {
     return (
@@ -44,7 +52,7 @@ export default async function CampaignsPage({ params }: PageProps) {
   return (
     <PageShell title={item.label} description={item.description}>
       <p className="text-muted-foreground mb-3 text-sm">
-        {formatNumber(rows.length)} kampanye, terbaru di atas.
+        {formatNumber(page.total)} kampanye, terbaru di atas.
       </p>
 
       <div className="overflow-x-auto rounded-lg border">
@@ -92,6 +100,8 @@ export default async function CampaignsPage({ params }: PageProps) {
         Batas harian dihitung per workspace sebelum setiap pengiriman. Kampanye
         yang berjalan tetap tidak bisa mengirim tanpa persetujuan manusia.
       </p>
+      <Pagination page={page} basePath={basePath} noun="kampanye" />
+
     </PageShell>
   )
 }

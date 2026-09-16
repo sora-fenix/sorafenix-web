@@ -110,3 +110,15 @@ export function navItem(segment: NavSegment): NavItem {
 export function workspaceHref(slug: string, segment: string): string {
   return `/app/${slug}/${segment}`
 }
+
+/**
+ * The API mirror of `workspaceHref`: `/api/workspaces/{slug}/{path}`.
+ *
+ * Here rather than built at the call site, because the two prefixes are not
+ * derivable from one another and deriving them anyway — a `.replace('/app/', …)`
+ * on a page href — is the kind of thing that keeps compiling after the route
+ * moves.
+ */
+export function workspaceApiHref(slug: string, path: string): string {
+  return `/api/workspaces/${slug}/${path}`
+}

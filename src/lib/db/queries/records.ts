@@ -1,6 +1,8 @@
 import 'server-only'
 
-import { and, count, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
+import type { PgTable } from 'drizzle-orm/pg-core'
 
 import { db } from '@/lib/db/drizzle'
 import {
@@ -16,6 +18,7 @@ import {
   suppressions,
 } from '@/lib/db/schema'
 import type { LeadStatus, MessageStatus } from '@/lib/db/schema'
+import { type Page, type PageRequest, buildPage, clampToTotal } from '@/lib/pagination'
 
 /**
  * Read-only list queries for the module screens.
@@ -25,11 +28,28 @@ import type { LeadStatus, MessageStatus } from '@/lib/db/schema'
  * `privileged connection` case in tests/integration/rls.test.ts asserts exactly
  * that, which is why this is the reviewer's job.
  *
- * A fixed LIMIT stands in for pagination, which arrives with the slice that
- * makes these screens interactive.
+ * Every list is paginated: the count runs first, the requested page is clamped to
+ * it, and only then are rows fetched. Asking for page 900 of 13 therefore lands on
+ * page 13 rather than on a blank table with no way back.
+ *
+ * Ordering always ends in a unique tiebreaker. Without one, two rows with the same
+ * score have no defined order between queries, and the same lead can appear on both
+ * page 1 and page 2 while another is never shown at all — 935 of the 1208 scraped
+ * leads share the `warm` band, so this is the common case, not an edge case.
  */
 
-const PAGE_SIZE = 100
+/**
+ * How many rows the same filter matches.
+ *
+ * Takes the identical `where` the row query uses, so the count and the page can
+ * never describe different sets. Joins are left out on purpose: every list here
+ * joins with `leftJoin`, which cannot change the number of base rows, and counting
+ * without them keeps the count cheap on a table of 1208 and rising.
+ */
+async function countWhere(table: PgTable, where: SQL | undefined): Promise<number> {
+  const [row] = await db.select({ n: count() }).from(table).where(where)
+  return row?.n ?? 0
+}
 
 // -----------------------------------------------------------------------------
 // Leads
@@ -51,8 +71,15 @@ export type LeadRow = {
   campaignName: string | null
 }
 
-export async function listLeads(workspaceId: string): Promise<LeadRow[]> {
-  return db
+export async function listLeads(
+  workspaceId: string,
+  request: PageRequest,
+): Promise<Page<LeadRow>> {
+  const where = eq(leads.workspaceId, workspaceId)
+  const total = await countWhere(leads, where)
+  const scoped = clampToTotal(request, total)
+
+  const rows = await db
     .select({
       id: leads.id,
       score: leads.score,
@@ -72,9 +99,79 @@ export async function listLeads(workspaceId: string): Promise<LeadRow[]> {
     .leftJoin(companies, eq(companies.id, leads.companyId))
     .leftJoin(contacts, eq(contacts.id, leads.contactId))
     .leftJoin(campaigns, eq(campaigns.id, leads.campaignId))
+    .where(where)
+    // `desc` puts NULLs first in Postgres, which would float every unscored lead
+    // above the best one. An unscored lead is the least urgent thing on the screen.
+    .orderBy(sql`${leads.score} desc nulls last`, asc(leads.id))
+    .limit(scoped.pageSize)
+    .offset(scoped.offset)
+
+  return buildPage(rows, scoped, total)
+}
+
+/**
+ * Every lead in the workspace, flattened for the CSV export.
+ *
+ * Deliberately not the paginated `listLeads`: an export that only contained the
+ * page you happened to be looking at would be a quietly wrong file, and "1208
+ * prospek" on screen next to a 100-row download is exactly the kind of mismatch
+ * nobody checks until it has been sent to someone.
+ *
+ * Capped rather than unbounded. The whole result is built into one string before
+ * it is sent, so the cap is what stands between a large workspace and the server
+ * running out of memory. When a workspace outgrows it, this becomes a streamed
+ * response, not a bigger number.
+ */
+export const EXPORT_MAX_ROWS = 20_000
+
+export type LeadExportRow = {
+  companyName: string | null
+  industry: string | null
+  city: string | null
+  rating: number | null
+  reviewCount: number | null
+  website: string | null
+  contactName: string | null
+  email: string | null
+  phone: string | null
+  whatsapp: string | null
+  score: number | null
+  category: string | null
+  status: LeadStatus
+  scoreReason: string | null
+  campaignName: string | null
+  sourceUrl: string | null
+  createdAt: Date
+}
+
+export async function exportLeads(workspaceId: string): Promise<LeadExportRow[]> {
+  return db
+    .select({
+      companyName: companies.name,
+      industry: companies.industry,
+      city: companies.city,
+      rating: companies.rating,
+      reviewCount: companies.reviewCount,
+      website: companies.website,
+      contactName: contacts.name,
+      email: contacts.email,
+      phone: contacts.phone,
+      whatsapp: contacts.whatsapp,
+      score: leads.score,
+      category: sql<string | null>`${leads.category}`,
+      status: leads.status,
+      scoreReason: leads.scoreReason,
+      campaignName: campaigns.name,
+      sourceUrl: companies.sourceUrl,
+      createdAt: leads.createdAt,
+    })
+    .from(leads)
+    .leftJoin(companies, eq(companies.id, leads.companyId))
+    .leftJoin(contacts, eq(contacts.id, leads.contactId))
+    .leftJoin(campaigns, eq(campaigns.id, leads.campaignId))
     .where(eq(leads.workspaceId, workspaceId))
-    .orderBy(desc(leads.score))
-    .limit(PAGE_SIZE)
+    .orderBy(sql`${leads.score} desc nulls last`, asc(leads.id))
+    .limit(EXPORT_MAX_ROWS)
 }
 
 // -----------------------------------------------------------------------------
@@ -93,8 +190,15 @@ export type CompanyRow = {
   contactCount: number
 }
 
-export async function listCompanies(workspaceId: string): Promise<CompanyRow[]> {
-  return db
+export async function listCompanies(
+  workspaceId: string,
+  request: PageRequest,
+): Promise<Page<CompanyRow>> {
+  const where = eq(companies.workspaceId, workspaceId)
+  const total = await countWhere(companies, where)
+  const scoped = clampToTotal(request, total)
+
+  const rows = await db
     .select({
       id: companies.id,
       name: companies.name,
@@ -110,9 +214,12 @@ export async function listCompanies(workspaceId: string): Promise<CompanyRow[]> 
       )`,
     })
     .from(companies)
-    .where(eq(companies.workspaceId, workspaceId))
-    .orderBy(companies.name)
-    .limit(PAGE_SIZE)
+    .where(where)
+    .orderBy(asc(companies.name), asc(companies.id))
+    .limit(scoped.pageSize)
+    .offset(scoped.offset)
+
+  return buildPage(rows, scoped, total)
 }
 
 // -----------------------------------------------------------------------------
@@ -131,8 +238,15 @@ export type ContactRow = {
   companyCity: string | null
 }
 
-export async function listContacts(workspaceId: string): Promise<ContactRow[]> {
-  return db
+export async function listContacts(
+  workspaceId: string,
+  request: PageRequest,
+): Promise<Page<ContactRow>> {
+  const where = eq(contacts.workspaceId, workspaceId)
+  const total = await countWhere(contacts, where)
+  const scoped = clampToTotal(request, total)
+
+  const rows = await db
     .select({
       id: contacts.id,
       name: contacts.name,
@@ -146,9 +260,14 @@ export async function listContacts(workspaceId: string): Promise<ContactRow[]> {
     })
     .from(contacts)
     .leftJoin(companies, eq(companies.id, contacts.companyId))
-    .where(eq(contacts.workspaceId, workspaceId))
-    .orderBy(contacts.name)
-    .limit(PAGE_SIZE)
+    .where(where)
+    // Scraped contacts have no name yet — enrichment fills it — so they sort last
+    // rather than filling the first page with blanks.
+    .orderBy(sql`${contacts.name} asc nulls last`, asc(contacts.id))
+    .limit(scoped.pageSize)
+    .offset(scoped.offset)
+
+  return buildPage(rows, scoped, total)
 }
 
 // -----------------------------------------------------------------------------
@@ -165,8 +284,15 @@ export type CampaignRow = {
   leadCount: number
 }
 
-export async function listCampaigns(workspaceId: string): Promise<CampaignRow[]> {
-  return db
+export async function listCampaigns(
+  workspaceId: string,
+  request: PageRequest,
+): Promise<Page<CampaignRow>> {
+  const where = eq(campaigns.workspaceId, workspaceId)
+  const total = await countWhere(campaigns, where)
+  const scoped = clampToTotal(request, total)
+
+  const rows = await db
     .select({
       id: campaigns.id,
       name: campaigns.name,
@@ -180,8 +306,12 @@ export async function listCampaigns(workspaceId: string): Promise<CampaignRow[]>
     })
     .from(campaigns)
     .leftJoin(products, eq(products.id, campaigns.productId))
-    .where(eq(campaigns.workspaceId, workspaceId))
-    .orderBy(desc(campaigns.createdAt))
+    .where(where)
+    .orderBy(desc(campaigns.createdAt), asc(campaigns.id))
+    .limit(scoped.pageSize)
+    .offset(scoped.offset)
+
+  return buildPage(rows, scoped, total)
 }
 
 // -----------------------------------------------------------------------------
@@ -215,16 +345,26 @@ function messageSelection() {
 }
 
 /** Inbound replies, newest first. */
-export async function listInbox(workspaceId: string): Promise<MessageRow[]> {
-  return db
+export async function listInbox(
+  workspaceId: string,
+  request: PageRequest,
+): Promise<Page<MessageRow>> {
+  const where = and(eq(messages.workspaceId, workspaceId), eq(messages.direction, 'in'))
+  const total = await countWhere(messages, where)
+  const scoped = clampToTotal(request, total)
+
+  const rows = await db
     .select(messageSelection())
     .from(messages)
     .leftJoin(leads, eq(leads.id, messages.leadId))
     .leftJoin(companies, eq(companies.id, leads.companyId))
     .leftJoin(contacts, eq(contacts.id, leads.contactId))
-    .where(and(eq(messages.workspaceId, workspaceId), eq(messages.direction, 'in')))
-    .orderBy(desc(messages.sentAt))
-    .limit(PAGE_SIZE)
+    .where(where)
+    .orderBy(sql`${messages.sentAt} desc nulls last`, desc(messages.createdAt), asc(messages.id))
+    .limit(scoped.pageSize)
+    .offset(scoped.offset)
+
+  return buildPage(rows, scoped, total)
 }
 
 /**
@@ -232,21 +372,33 @@ export async function listInbox(workspaceId: string): Promise<MessageRow[]> {
  * complete from knowledge_docs and which must never be sent as-is
  * (CLAUDE.md rule 3).
  */
-export async function listApprovals(workspaceId: string): Promise<MessageRow[]> {
-  return db
+export async function listApprovals(
+  workspaceId: string,
+  request: PageRequest,
+): Promise<Page<MessageRow>> {
+  const where = and(
+    eq(messages.workspaceId, workspaceId),
+    inArray(messages.status, ['needs_input', 'pending_approval']),
+  )
+  const total = await countWhere(messages, where)
+  const scoped = clampToTotal(request, total)
+
+  const rows = await db
     .select(messageSelection())
     .from(messages)
     .leftJoin(leads, eq(leads.id, messages.leadId))
     .leftJoin(companies, eq(companies.id, leads.companyId))
     .leftJoin(contacts, eq(contacts.id, leads.contactId))
-    .where(
-      and(
-        eq(messages.workspaceId, workspaceId),
-        inArray(messages.status, ['needs_input', 'pending_approval']),
-      ),
+    .where(where)
+    .orderBy(
+      sql`case when ${messages.status} = 'needs_input' then 0 else 1 end`,
+      desc(messages.createdAt),
+      asc(messages.id),
     )
-    .orderBy(sql`case when ${messages.status} = 'needs_input' then 0 else 1 end`, desc(messages.createdAt))
-    .limit(PAGE_SIZE)
+    .limit(scoped.pageSize)
+    .offset(scoped.offset)
+
+  return buildPage(rows, scoped, total)
 }
 
 // -----------------------------------------------------------------------------

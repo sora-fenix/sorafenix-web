@@ -1,8 +1,9 @@
+import { Download } from 'lucide-react'
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { CategoryBadge, LeadStatusBadge } from '@/components/crm/labels'
-import { navItem } from '@/components/layout/nav-items'
+import { navItem, workspaceApiHref, workspaceHref } from '@/components/layout/nav-items'
 import { EmptyState, PageShell } from '@/components/layout/page-shell'
 import {
   Table,
@@ -12,21 +13,30 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Pagination } from '@/components/layout/pagination'
+import { buttonVariants } from '@/components/ui/button'
 import { getWorkspaceContext } from '@/lib/auth/session'
 import { listLeads } from '@/lib/db/queries/records'
 import { formatNumber, formatRelativeDay, isOverdue, truncate } from '@/lib/format'
+import { pageRequest } from '@/lib/pagination'
 
 export const metadata: Metadata = { title: navItem('leads').label }
 
-type PageProps = { params: Promise<{ workspace: string }> }
+type PageProps = {
+  params: Promise<{ workspace: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}
 
-export default async function LeadsPage({ params }: PageProps) {
+export default async function LeadsPage({ params, searchParams }: PageProps) {
   const { workspace: slug } = await params
+  const query = await searchParams
   const context = await getWorkspaceContext(slug)
   if (context === null) notFound()
 
   const item = navItem('leads')
-  const rows = await listLeads(context.workspace.id)
+  const page = await listLeads(context.workspace.id, pageRequest(query.page))
+  const rows = page.rows
+  const basePath = workspaceHref(slug, 'leads')
 
   if (rows.length === 0) {
     return (
@@ -43,9 +53,24 @@ export default async function LeadsPage({ params }: PageProps) {
 
   return (
     <PageShell title={item.label} description={item.description}>
-      <p className="text-muted-foreground mb-3 text-sm">
-        {formatNumber(rows.length)} prospek, diurutkan dari skor tertinggi.
-      </p>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-muted-foreground text-sm">
+          {formatNumber(page.total)} prospek, diurutkan dari skor tertinggi.
+        </p>
+        {/*
+          A plain link, not a button with a fetch: the browser downloads it, so
+          this screen stays a server component. The file holds every lead in the
+          workspace, not just this page.
+        */}
+        <a
+          href={workspaceApiHref(slug, 'leads/export')}
+          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          download
+        >
+          <Download className="size-4" aria-hidden />
+          Unduh CSV ({formatNumber(page.total)})
+        </a>
+      </div>
 
       <div className="overflow-x-auto rounded-lg border">
         <Table>
@@ -104,6 +129,8 @@ export default async function LeadsPage({ params }: PageProps) {
           </TableBody>
         </Table>
       </div>
+
+      <Pagination page={page} basePath={basePath} noun="prospek" />
 
       <div className="mt-6">
         <h2 className="mb-2 text-sm font-semibold">Alasan skor teratas</h2>

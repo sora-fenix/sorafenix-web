@@ -3,24 +3,32 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { CHANNEL_LABELS, MessageStatusBadge } from '@/components/crm/labels'
-import { navItem } from '@/components/layout/nav-items'
+import { navItem, workspaceHref } from '@/components/layout/nav-items'
 import { EmptyState, PageShell } from '@/components/layout/page-shell'
 import { Badge } from '@/components/ui/badge'
+import { Pagination } from '@/components/layout/pagination'
 import { getWorkspaceContext } from '@/lib/auth/session'
 import { listApprovals } from '@/lib/db/queries/records'
 import { formatDateTime, formatNumber, truncate } from '@/lib/format'
+import { pageRequest } from '@/lib/pagination'
 
 export const metadata: Metadata = { title: navItem('approvals').label }
 
-type PageProps = { params: Promise<{ workspace: string }> }
+type PageProps = {
+  params: Promise<{ workspace: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}
 
-export default async function ApprovalsPage({ params }: PageProps) {
+export default async function ApprovalsPage({ params, searchParams }: PageProps) {
   const { workspace: slug } = await params
+  const query = await searchParams
   const context = await getWorkspaceContext(slug)
   if (context === null) notFound()
 
   const item = navItem('approvals')
-  const rows = await listApprovals(context.workspace.id)
+  const page = await listApprovals(context.workspace.id, pageRequest(query.page))
+  const rows = page.rows
+  const basePath = workspaceHref(slug, 'approvals')
 
   if (rows.length === 0) {
     return (
@@ -41,7 +49,7 @@ export default async function ApprovalsPage({ params }: PageProps) {
     <PageShell title={item.label} description={item.description}>
       {needsInput === 0 ? (
         <p className="text-muted-foreground mb-3 text-sm">
-          {formatNumber(rows.length)} draf menunggu persetujuan Anda.
+          {formatNumber(page.total)} draf menunggu persetujuan Anda.
         </p>
       ) : (
         <div className="mb-4 flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/40">
@@ -101,6 +109,8 @@ export default async function ApprovalsPage({ params }: PageProps) {
         Tombol setujui dan tolak menyusul bersama Modul 5. Sampai saat itu layar
         ini hanya menampilkan antrean — tidak ada jalur kirim otomatis.
       </p>
+      <Pagination page={page} basePath={basePath} noun="draf" />
+
     </PageShell>
   )
 }

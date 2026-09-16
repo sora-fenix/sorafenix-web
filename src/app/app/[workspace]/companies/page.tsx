@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { navItem } from '@/components/layout/nav-items'
+import { navItem, workspaceHref } from '@/components/layout/nav-items'
 import { EmptyState, PageShell } from '@/components/layout/page-shell'
 import {
   Table,
@@ -11,21 +11,29 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Pagination } from '@/components/layout/pagination'
 import { getWorkspaceContext } from '@/lib/auth/session'
 import { listCompanies } from '@/lib/db/queries/records'
 import { formatNumber } from '@/lib/format'
+import { pageRequest } from '@/lib/pagination'
 
 export const metadata: Metadata = { title: navItem('companies').label }
 
-type PageProps = { params: Promise<{ workspace: string }> }
+type PageProps = {
+  params: Promise<{ workspace: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}
 
-export default async function CompaniesPage({ params }: PageProps) {
+export default async function CompaniesPage({ params, searchParams }: PageProps) {
   const { workspace: slug } = await params
+  const query = await searchParams
   const context = await getWorkspaceContext(slug)
   if (context === null) notFound()
 
   const item = navItem('companies')
-  const rows = await listCompanies(context.workspace.id)
+  const page = await listCompanies(context.workspace.id, pageRequest(query.page))
+  const rows = page.rows
+  const basePath = workspaceHref(slug, 'companies')
 
   if (rows.length === 0) {
     return (
@@ -43,7 +51,7 @@ export default async function CompaniesPage({ params }: PageProps) {
   return (
     <PageShell title={item.label} description={item.description}>
       <p className="text-muted-foreground mb-3 text-sm">
-        {formatNumber(rows.length)} perusahaan, diurutkan menurut nama.
+        {formatNumber(page.total)} perusahaan, diurutkan menurut nama.
       </p>
 
       <div className="overflow-x-auto rounded-lg border">
@@ -90,6 +98,8 @@ export default async function CompaniesPage({ params }: PageProps) {
           </TableBody>
         </Table>
       </div>
+      <Pagination page={page} basePath={basePath} noun="perusahaan" />
+
     </PageShell>
   )
 }
