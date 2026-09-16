@@ -118,6 +118,16 @@ export const companies = pgTable(
     domain: text('domain'),
     website: text('website'),
     industry: text('industry'),
+    /**
+     * Street address as the scraper read it, unparsed.
+     *
+     * `city` is extracted from this by the n8n workflow rather than from the
+     * search term, so the two are consistent; nothing else is split out. A
+     * kelurahan/kecamatan breakdown would be guesswork against Indonesian address
+     * formats, and the one thing the address is for — telling a salesperson where
+     * to go — needs it whole.
+     */
+    address: text('address'),
     city: text('city'),
     country: text('country').default('ID'),
     sizeBand: text('size_band'),

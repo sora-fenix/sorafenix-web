@@ -110,6 +110,8 @@ const PET_SHOP: Item = {
   company_name: 'Pet Shop Surabaya',
   website: 'https://petshopsby.com',
   address: 'Jl. Raya Darmo No. 12',
+  rating: 4.8,
+  review_count: 137,
   city: 'Surabaya',
   phone: '+628123456789',
   email: 'info@petshopsby.com',
@@ -254,13 +256,28 @@ describe('POST /api/webhooks/n8n/leads — ingestion', () => {
     expect(await countLeads()).toBe(3)
 
     const [company] = await sql<
-      { name: string; domain: string; name_normalized: string; dedupe_key: string }[]
+      {
+        name: string
+        domain: string
+        name_normalized: string
+        dedupe_key: string
+        address: string | null
+        rating: string | null
+        review_count: number | null
+      }[]
     >`
-      select name, domain, name_normalized, dedupe_key from companies
+      select name, domain, name_normalized, dedupe_key, address, rating, review_count
+      from companies
       where workspace_id = ${workspaceId} and name = 'Pet Shop Surabaya'`
     expect(company?.domain).toBe('petshopsby.com')
     expect(company?.name_normalized).toBe('pet shop surabaya')
     expect(company?.dedupe_key).toBe('domain:petshopsby.com')
+    // The address arrived with every lead from the first sweep and was normalised
+    // and then dropped on the floor: `companies` had no column for it until
+    // 2026-09-16, and 1033 of 1208 addresses had to be recovered from `raw`.
+    expect(company?.address).toBe('Jl. Raya Darmo No. 12')
+    expect(company?.rating).toBe('4.8')
+    expect(company?.review_count).toBe(137)
 
     // Phones are stored canonical, whatever spelling arrived.
     const phones = await sql<{ phone: string }[]>`

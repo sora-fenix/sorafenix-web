@@ -64,6 +64,20 @@
       "when": 1789282636181,
       "tag": "0008_scrub_leaked_webhook_secret",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789538327648,
+      "tag": "0009_confused_puff_adder",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789538328648,
+      "tag": "0010_backfill_company_address",
+      "breakpoints": true
     }
   ]
 }

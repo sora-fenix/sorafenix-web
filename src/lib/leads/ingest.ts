@@ -181,6 +181,7 @@ async function insertNewLead(
       domain: lead.domain,
       website: lead.website,
       industry: lead.category,
+      address: lead.address,
       city: lead.city,
       rating: lead.rating,
       reviewCount: lead.reviewCount,
@@ -266,6 +267,7 @@ async function mergeIntoExisting(
   if (existing.website === null && lead.website !== null) filled.website = lead.website
   if (existing.city === null && lead.city !== null) filled.city = lead.city
   if (existing.industry === null && lead.category !== null) filled.industry = lead.category
+  if (existing.address === null && lead.address !== null) filled.address = lead.address
   if (existing.rating === null && lead.rating !== null) filled.rating = lead.rating
   if (existing.reviewCount === null && lead.reviewCount !== null) {
     filled.reviewCount = lead.reviewCount
