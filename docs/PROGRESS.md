@@ -2,7 +2,7 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-16 (fourteenth pass: the address column)
+**Last updated:** 2026-09-16 (fifteenth pass: Vercel deployment prep)
 **Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
 Module 3 scores leads with a weighted rubric and moves them to `qualified`. The
 lead hunter now sweeps a rotating slice of 1500 keyword × city × page combinations
@@ -1061,6 +1061,62 @@ it will show as a zero in `leads:stats` rather than being backfilled.
 
 ---
 
+## Slice — Vercel deployment prep (2026-09-16)
+
+Asked for: set up Vercel. Insforge was dropped by owner decision — Supabase stays.
+
+### What shipped
+
+- `vercel.json` — framework and `regions: ["sin1"]`. An app in Singapore talking
+  to a database in Virginia pays that distance on every query, and the users are
+  in Jawa Timur.
+- `docs/DEPLOY.md` — the whole path, written as steps the **owner** takes. Nothing
+  in this repository can log into a Vercel or Supabase account, and the guide says
+  so at the top rather than pretending otherwise.
+
+### The three orderings that fail as something else
+
+Each of these produces an error that points at the wrong thing, which is why they
+are called out individually rather than buried in a list:
+
+1. **Migrations before the first deploy.** Otherwise every page returns 500 with a
+   relation-does-not-exist error that reads like a code bug.
+2. **Two different connection strings.** Transaction pooler (6543) for the app,
+   direct (5432) for `pnpm db:migrate`. drizzle-kit takes advisory locks and runs
+   DDL needing one session throughout, and the pooler hands out a different backend
+   per statement — it fails midway with some migrations applied and some not.
+   `drizzle.ts` already sets `prepare: false`, which the pooler requires.
+3. **`NEXT_PUBLIC_APP_URL` and the Supabase redirect allowlist.** A mismatch sends
+   a magic link pointing at `localhost:3000` to a real inbox. Looks like a broken
+   deploy; is two fields.
+
+### Two claims checked against the code rather than assumed
+
+- **The first workspace is created in the browser, not by `pnpm workspace:create`.**
+  That script takes `--members-from <slug>` and copies memberships from a workspace
+  that already has some. The real path is the form on `/app`, which exists because
+  `0001_rls.sql` gives `workspaces` no INSERT policy and `memberships_insert_admin`
+  needs the caller to already be an owner — the creator's own first membership row
+  is unreachable from the browser by construction.
+- **`pnpm db:seed` must never touch production.** It writes a demo workspace, three
+  fake Supabase auth users and fabricated leads and scores, with no supported way
+  to unpick it afterwards.
+
+Commands in the guide are PowerShell, since that is the shell this project is
+developed in — `VAR=value command` is bash syntax and silently does something else
+on Windows. `drizzle.config.ts` loads `.env.local` with dotenv, which does not
+overwrite an already-set variable, so `$env:DATABASE_URL` wins for the session and
+`.env.local` is never edited.
+
+### Not done, and it is the interesting part
+
+**Nothing has been deployed.** The guide is untested against a real Vercel project
+and a real Supabase cloud database, so it is a careful reading of this codebase
+rather than a transcript of a successful deploy. The first run will find something;
+that is expected, and the fix belongs back in this file.
+
+---
+
 ## Slice — company address (2026-09-16)
 
 Asked for: more company detail on the petshops — "alamat email dll".
@@ -1500,9 +1556,10 @@ UI → test), nothing started until the previous slice is green.
     paginated with true totals; leads downloadable as Excel-ready CSV.
 14. ~~**Company detail — the address column.**~~ — **done 2026-09-16.** 1033 of 1208
     addresses recovered from `raw`; ingest stores it from now on.
-15. **Vercel deployment prep** ← *next.* — `vercel.json`, the env checklist, and
-    `docs/DEPLOY.md`. The owner does the login and the deploy.
-16. **Module 5 + approvals.** Unblocked for building and testing on 2026-09-15 by a
+15. ~~**Vercel deployment prep.**~~ — **done 2026-09-16.** `vercel.json` and
+    `docs/DEPLOY.md`. Untested against a real project; the owner does the login and
+    the deploy.
+16. **Module 5 + approvals.** ← *next.* Unblocked for building and testing on 2026-09-15 by a
     dummy product and dummy knowledge docs (known issue 21). Still blocked for any
     real send until the owner writes the real offer.
 
@@ -1711,6 +1768,17 @@ setup in `docs/n8n-integration.md`.
    every skipped row, so page 500 of a large table is measurably worse than page 1.
    Invisible at 1208 rows; the fix, when it is needed, is keyset pagination on
    `(score, id)`, which the tiebreaker already makes possible.
+24. **`docs/DEPLOY.md` has never been executed.** It is derived from the code, not
+   from a successful deploy, so the first real run is also its first test. Two
+   places are most likely to be wrong: the exact shape of Supabase's pooled
+   connection string, and whether `regions: ["sin1"]` is accepted on the plan in
+   use. Corrections belong in that file.
+25. **`drizzle.ts` opens up to 10 connections per instance.** Fine on one laptop;
+   a different shape once serverless functions scale out behind the pooler. Lower
+   `max` before it matters, not after.
+26. **No cron route and no `crons` entry in `vercel.json`.** SPEC §7 wants
+   `/api/cron/sequences` every five minutes. Both belong to the slice that builds
+   the runner.
 
 ---
 
@@ -1783,6 +1851,8 @@ setup in `docs/n8n-integration.md`.
 | 63 | Phone numbers are exported as `="+62…"` | `+6281234567890` in a cell is a unary-plus formula and returns 6.28E+12. The string-literal form is the one thing that renders correctly in both Excel and Sheets. Every other cell is defused against CSV injection instead, since only phone columns need to survive as written. |
 | 64 | Paging lives in the URL, in a server component | `?page=` makes a page shareable and refresh-proof, and keeps the list screens free of `'use client'` (`.claude/rules/ui.md`). The cost is a round trip per page, which is the right cost for a table of 1208 rows that changes when scoring runs. |
 | 65 | `companies.address` is stored **whole**, not split into kelurahan/kecamatan | The n8n workflow already extracts `city` from the address, so the one derived field that matters exists. Parsing the rest would be guesswork against Indonesian address formats, and the thing an address is for — telling a salesperson where to go — needs it intact. |
+| 66 | Vercel functions are pinned to **`sin1`** (Singapore) | Nearest region to Jawa Timur, and it keeps the app beside a Supabase project in the same region. Latency to the database is paid on every query, not once. |
+| 67 | Insforge was **not** adopted; Supabase stays | Owner decision, 2026-09-16. Supabase holds Postgres, Auth, RLS and eleven applied migrations. Replacing it means rewriting auth, every RLS policy and the Drizzle path — weeks of work, and it would put the tenant isolation that integration tests currently prove back into the unproven column. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
