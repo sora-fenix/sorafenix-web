@@ -149,9 +149,9 @@ export const CONTACT_COOLDOWN_MS = 24 * 60 * 60 * 1000
 /**
  * Business hours in the lead's local time: 08:00 up to (not including) 17:00.
  *
- * Owner-confirmable assumption, 2026-09-15 — neither SPEC nor the rules name a
- * window. Minutes since local midnight, so a zone with a half-hour offset is not
- * rounded to the wrong hour.
+ * Confirmed by the owner, 2026-09-15 — neither SPEC nor the rules named a window.
+ * Minutes since local midnight, so a zone with a half-hour offset is not rounded to
+ * the wrong hour.
  */
 export const SENDING_START_MINUTE = 8 * 60
 export const SENDING_END_MINUTE = 17 * 60

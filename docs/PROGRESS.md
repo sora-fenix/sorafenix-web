@@ -1374,10 +1374,9 @@ UI → test), nothing started until the previous slice is green.
     ahead of 3c and Module 5 by owner decision: it needs no business decision, and
     it has to exist before any adapter does. Six checks in order, pure and
     unit-tested, loaded by `send-context.ts` and proven against real Postgres.
-13. **Next: Module 5 + approvals** — blocked on a business decision, not on code.
-    `data-riil` has no `products` row and no `knowledge_docs`, so under rule 3 every
-    draft would come out `needs_input` with an empty body. What SORA sells to these
-    petshops is the owner's to write down; `pnpm product:create` takes it from there.
+13. **Next: Module 5 + approvals.** Unblocked for building and testing on
+    2026-09-15 by a dummy product and dummy knowledge docs (known issue 21). Still
+    blocked for any real send until the owner writes the real offer.
 
 ## Blocked
 
@@ -1532,17 +1531,20 @@ setup in `docs/n8n-integration.md`.
    Done 2026-09-14: `drizzle/0008_scrub_leaked_webhook_secret.sql` removed the key
    from both tables (verified 0 remaining, 6087 stored items otherwise intact), and
    the node now strips `CONFIG_KEYS` before writing `raw`.
-   **Still open, and it is the half that matters: the secret must be rotated.**
-   Deleting the value does not un-leak it — it was readable to anything with
-   database access, and to any backup taken during the scraping week. Rotation is
-   owner action, in this order:
-   1. generate a new value and set `N8N_WEBHOOK_SECRET` in `.env.local`;
-   2. set `SORA_WEBHOOK_SECRET` on the `sora_n8n` container and restart it
-      (`pnpm n8n:stop && pnpm n8n:start`);
-   3. re-import the workflow (this also closes known issue 14);
-   4. run one sweep and confirm SORA answers `accepted`, not `invalid_signature`.
-   Both sides must change together — the HMAC is verified over the raw body, so a
-   mismatched pair fails every delivery.
+   **Still open: the secret should be rotated.** Deleting the value does not
+   un-leak it. Proportion, corrected 2026-09-15: the whole stack is local — Postgres
+   and n8n both listen on 127.0.0.1 — so the exposure is this machine and any copy
+   of its database, not the internet. Hygiene, not an emergency, unless the same
+   value is reused anywhere else.
+   The earlier steps here were wrong: they named two places to change. There is
+   one. `docker-compose.n8n.yml` reads `SORA_WEBHOOK_SECRET` from
+   `N8N_WEBHOOK_SECRET` in `.env.local`, the same file the app reads, so:
+   1. replace `N8N_WEBHOOK_SECRET` in `.env.local` with a new random value;
+   2. restart `pnpm dev`, and recreate n8n (`pnpm n8n:stop && pnpm n8n:start`) so
+      the container picks the new value up;
+   3. re-import the workflow onto the same id, keeping the Serper credential bound
+      (the procedure in "Imported into the running container"; closes issue 14);
+   4. run one search and confirm SORA answers `accepted`, not `invalid_signature`.
 16. **The daily limit can be overshot by concurrent senders.** `guardSend` counts,
    then the caller sends; two workers judging at the same moment can both see 99 of
    100. Harmless with one sequential runner and wrong with two. The fix is to claim
@@ -1557,11 +1559,24 @@ setup in `docs/n8n-integration.md`.
    Outside it, Cloud API accepts template messages only; that is channel mechanics
    and belongs to the WhatsApp adapter, which does not exist yet. Nothing sends, so
    nothing is violated today.
-19. **Quiet hours ignore Indonesian public holidays**, and the 08:00–17:00
-   Monday–Friday window is an assumption the owner has not confirmed — many petshops
-   trade on Saturday. Both are one constant in `send-guard.ts`.
+19. **Quiet hours ignore Indonesian public holidays.** The 08:00–17:00
+   Monday–Friday window itself was confirmed by the owner on 2026-09-15 (decision
+   59); holidays are still unhandled.
 20. **`campaigns.daily_cap` is not enforced.** The rules name the workspace limit;
    the per-campaign cap in the schema has no reader yet.
+21. **`data-riil` holds a DUMMY product and three DUMMY knowledge docs, next to 1208
+   real businesses.** Added 2026-09-15 at the owner's request so Module 5 can be
+   built and tested before the real offer is written: product
+   `[DUMMY] Aplikasi Kasir & Stok Petshop`, and knowledge docs
+   `[DUMMY] Profil Perusahaan`, `[DUMMY] Daftar Harga` (fictional prices) and
+   `[DUMMY] Pertanyaan yang Sering Diajukan`. Every title and every body is marked.
+   Nothing can send today, so nothing has reached a petshop. **Before the first real
+   send, these must be replaced by the owner's real product** — otherwise a draft to
+   a real shop can quote a price that does not exist, which is exactly what rule 3
+   exists to prevent. Test sends, when an adapter exists, go to the owner's own
+   number, never to a lead in this workspace. To remove:
+   `delete from knowledge_docs where title like '[DUMMY]%'` and
+   `delete from products where name like '[DUMMY]%'`, scoped to `data-riil`.
 
 ---
 
@@ -1627,6 +1642,8 @@ setup in `docs/n8n-integration.md`.
 | 56 | An Indonesian lead in an unknown city must be inside business hours in **all three** zones; outside Indonesia the guard refuses | `.claude/rules/outreach.md` says the lead's local time, not the workspace's, so falling back to `workspaces.timezone` is exactly the forbidden move. Intersecting WIB, WITA and WIT costs two hours of window and can never wake anyone; refusing a lead we cannot place at all is the only answer that cannot be wrong at 03:00. |
 | 57 | Scraped `+628` WhatsApp numbers from a business's own Google Maps listing are **business contacts** | Owner decision, 2026-09-15. `.claude/rules/outreach.md` permits business contacts only and treats an unclear source as personal. These numbers were published by the business as its public contact channel, which is the lawful basis recorded here. Opt-out, quiet hours, cooldown and the daily limit still apply on top. |
 | 58 | The guard fails closed | A dropped connection or an invalid workspace timezone returns `guard_failed`, never an allowed send. The integration suite showed why this matters on its first run: a broken loader produced 20 refusals, not 20 sends. |
+| 59 | Business hours are **08:00–17:00, Monday–Friday**, in the lead's local time | Owner decision, 2026-09-15, confirming the window the guard shipped with. Saturday stays closed even though many petshops trade on it: outreach reaches the owner, not the shop floor. |
+| 60 | Module 5 is built against a **marked dummy** product, not a real one | Owner decision, 2026-09-15: build and test drafting now, write the real offer by hand later. Every dummy title and body carries `[DUMMY]` / "DATA UJI COBA" so a draft quoting it is recognisable on sight, and known issue 21 makes replacing it a precondition of the first real send. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
