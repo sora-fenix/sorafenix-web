@@ -2,7 +2,7 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-15 (twelfth pass: the send guard)
+**Last updated:** 2026-09-16 (thirteenth pass: pagination and CSV export)
 **Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
 Module 3 scores leads with a weighted rubric and moves them to `qualified`. The
 lead hunter now sweeps a rotating slice of 1500 keyword × city × page combinations
@@ -37,9 +37,9 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 320 tests, 10 files |
-| `pnpm build` | ✅ all 18 routes built |
-| `pnpm test:integration` | ✅ 114 tests, 9 files |
+| `pnpm test` | ✅ 379 tests, 12 files |
+| `pnpm build` | ✅ all 19 routes built |
+| `pnpm test:integration` | ✅ 124 tests, 10 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -1061,6 +1061,88 @@ it will show as a zero in `leads:stats` rather than being backfilled.
 
 ---
 
+## Slice — pagination and CSV export (2026-09-16)
+
+Asked for, alongside three other things: pagination, and a CSV/Excel download.
+
+### The bug underneath the feature request
+
+Every list screen fetched a fixed 100 rows and then captioned itself with
+`rows.length`. On `data-riil` that read **"100 prospek"** under a workspace holding
+1208. Not a truncation a reader can detect, and not one the screen admitted to —
+it is the reason this slice was worth doing before anything cosmetic.
+
+### What shipped
+
+- `src/lib/pagination.ts` — pure. Parses `?page=` from a URL, which means from
+  anyone: `abc`, `-1`, `0`, `1.9`, `Infinity`, and the repeated `?page=1&page=2`
+  that really does arrive as an array all resolve rather than reaching an SQL
+  OFFSET. Counts first, then clamps, so page 900 of 13 shows page 13 instead of an
+  empty table with no way back.
+- `records.ts` — all six list queries paginated (leads, companies, contacts,
+  campaigns, inbox, approvals), each returning `Page<T>` with the true total.
+  `listCampaigns` had no limit at all before this.
+- **Every ordering gained a unique tiebreaker.** Without one, two rows with equal
+  scores have no defined order between queries and paging can show one lead twice
+  while never showing another. With 935 of 1208 leads sharing the `warm` band this
+  is the common case, not an edge case. `NULLS LAST` too — `desc` floats NULLs
+  first in Postgres, which would have put every unscored lead above the best one.
+- `src/components/layout/pagination.tsx` — server component, plain links, no
+  `'use client'`. Paging lives in the URL, so a page is shareable and survives a
+  refresh. At the ends of the range the control becomes a `span`, because a
+  disabled link is still focusable.
+- `src/lib/export/csv.ts` + `leads-csv.ts` — the CSV, and
+  `GET /api/workspaces/{slug}/leads/export`.
+
+### The CSV is built for Excel with an Indonesian locale
+
+Three deliberate choices, each pinned by a test, because the neutral version of
+each fails silently on the machines this is for:
+
+| Choice | Without it |
+|---|---|
+| `;` separator | Excel ID splits on the locale list separator; a comma file lands entirely in column A |
+| decimal comma (`4,7`) | the rating is text, and does not sort |
+| UTF-8 BOM | Excel reads the legacy code page and shop names arrive as mojibake |
+
+Phone and WhatsApp are written as `="+6281234567890"`. Typed into a cell,
+`+6281234567890` is a unary-plus **formula** and comes back as 6.28E+12; the string
+literal form survives in both Excel and Sheets. Every other cell is defused
+against CSV injection — a leading `=`, `+`, `-` or `@` gets an apostrophe — so the
+file we hand a salesperson cannot run anything.
+
+The cost is that the file is tuned for one locale rather than being RFC-neutral.
+That is the right trade for a file meant to be opened in Excel, and the wrong one
+for a machine-readable export, which should be a separate endpoint rather than a
+compromise between the two.
+
+### Proved on the real workspace
+
+`exportLeads` + `leadsToCsv` over `data-riil`: **1208 rows, 1209 lines, 546 KB, 74 ms**,
+BOM present, phone numbers intact. The export deliberately ignores the page on
+screen — a download that only held the rows you happened to be looking at would be
+quietly wrong, and "1208 prospek" beside a 100-row file is exactly the mismatch
+nobody checks until it has been sent to someone.
+
+### Two tests that did not have teeth until they were checked
+
+- Removing `asc(leads.id)` from the ordering left the paging test **passing**: on
+  seven rows Postgres returns a stable order anyway. The assertion was rewritten to
+  check the ids come back sorted — ids are random UUIDs while insertion order is
+  different, so physical order is not sorted order — and it now fails without the
+  tiebreaker.
+- The CSV injection test claimed a leading tab was defused. It was not: `textCell`
+  trims first, so a cell can never still begin with one. The regex branch for tab
+  and CR was dead code and was removed rather than left looking protective.
+
+### Not in this slice
+
+The export has no `Alamat` column yet — `companies` has no address column at all
+(next slice). Only leads can be exported; the other screens paginate but do not
+download.
+
+---
+
 ## Slice — the send guard (2026-09-15)
 
 Asked for: the send guard, first, before Module 5 or enrichment — it needs no
@@ -1374,9 +1456,17 @@ UI → test), nothing started until the previous slice is green.
     ahead of 3c and Module 5 by owner decision: it needs no business decision, and
     it has to exist before any adapter does. Six checks in order, pure and
     unit-tested, loaded by `send-context.ts` and proven against real Postgres.
-13. **Next: Module 5 + approvals.** Unblocked for building and testing on
-    2026-09-15 by a dummy product and dummy knowledge docs (known issue 21). Still
-    blocked for any real send until the owner writes the real offer.
+13. ~~**Pagination + CSV export.**~~ — **done 2026-09-16.** Six list screens
+    paginated with true totals; leads downloadable as Excel-ready CSV.
+14. **Company detail — the address column.** ← *next.* `companies` has no `address`
+    column, `insertNewLead` normalises the address and then drops it, and 1033 of
+    1208 addresses are sitting unread in `companies.raw`. Same shape as the
+    rating/review backfill.
+15. **Vercel deployment prep** — `vercel.json`, the env checklist, and
+    `docs/DEPLOY.md`. The owner does the login and the deploy.
+16. **Module 5 + approvals.** Unblocked for building and testing on 2026-09-15 by a
+    dummy product and dummy knowledge docs (known issue 21). Still blocked for any
+    real send until the owner writes the real offer.
 
 ## Blocked
 
@@ -1577,6 +1667,12 @@ setup in `docs/n8n-integration.md`.
    number, never to a lead in this workspace. To remove:
    `delete from knowledge_docs where title like '[DUMMY]%'` and
    `delete from products where name like '[DUMMY]%'`, scoped to `data-riil`.
+22. **Only the leads screen has a download.** The other five paginate but cannot
+   export. Adding one is a column list and a route each; nobody has asked yet.
+23. **`OFFSET` paging gets slower the deeper it goes.** Postgres counts and discards
+   every skipped row, so page 500 of a large table is measurably worse than page 1.
+   Invisible at 1208 rows; the fix, when it is needed, is keyset pagination on
+   `(score, id)`, which the tiebreaker already makes possible.
 
 ---
 
@@ -1644,6 +1740,10 @@ setup in `docs/n8n-integration.md`.
 | 58 | The guard fails closed | A dropped connection or an invalid workspace timezone returns `guard_failed`, never an allowed send. The integration suite showed why this matters on its first run: a broken loader produced 20 refusals, not 20 sends. |
 | 59 | Business hours are **08:00–17:00, Monday–Friday**, in the lead's local time | Owner decision, 2026-09-15, confirming the window the guard shipped with. Saturday stays closed even though many petshops trade on it: outreach reaches the owner, not the shop floor. |
 | 60 | Module 5 is built against a **marked dummy** product, not a real one | Owner decision, 2026-09-15: build and test drafting now, write the real offer by hand later. Every dummy title and body carries `[DUMMY]` / "DATA UJI COBA" so a draft quoting it is recognisable on sight, and known issue 21 makes replacing it a precondition of the first real send. |
+| 61 | Every paginated ordering ends in a **unique tiebreaker** | Two rows with the same score have no defined order between queries, so paging can show one lead twice and never show another. 935 of the 1208 scraped leads share the `warm` band, so this is the ordinary case. `NULLS LAST` is part of the same fix: `desc` puts NULLs first in Postgres, which would float unscored leads above the best-scoring one. |
+| 62 | The CSV is tuned for **Excel with an Indonesian locale**, not for RFC 4180 | Semicolon separator, decimal comma, UTF-8 BOM. The neutral choice fails silently on the machines this product is for: one row per column A, a rating that is text, and mojibake in shop names. A machine-readable export, if one is ever needed, is a separate endpoint rather than a compromise between the two. |
+| 63 | Phone numbers are exported as `="+62…"` | `+6281234567890` in a cell is a unary-plus formula and returns 6.28E+12. The string-literal form is the one thing that renders correctly in both Excel and Sheets. Every other cell is defused against CSV injection instead, since only phone columns need to survive as written. |
+| 64 | Paging lives in the URL, in a server component | `?page=` makes a page shareable and refresh-proof, and keeps the list screens free of `'use client'` (`.claude/rules/ui.md`). The cost is a round trip per page, which is the right cost for a table of 1208 rows that changes when scoring runs. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
