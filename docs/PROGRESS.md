@@ -2,7 +2,7 @@
 
 Current state and next steps. Updated after every task, per CLAUDE.md §4.
 
-**Last updated:** 2026-09-16 (thirteenth pass: pagination and CSV export)
+**Last updated:** 2026-09-16 (fourteenth pass: the address column)
 **Phase:** 2 in progress. Ingestion feeds real leads, `agent.ts` calls a model, and
 Module 3 scores leads with a weighted rubric and moves them to `qualified`. The
 lead hunter now sweeps a rotating slice of 1500 keyword × city × page combinations
@@ -1061,6 +1061,46 @@ it will show as a zero in `leads:stats` rather than being backfilled.
 
 ---
 
+## Slice — company address (2026-09-16)
+
+Asked for: more company detail on the petshops — "alamat email dll".
+
+### What was actually wrong
+
+`companies` had **no address column at all**. `normalizeLead` produced a trimmed
+address from every incoming lead and `insertNewLead` then dropped it on the floor,
+silently, since the first sweep. The only surviving copy was the untouched Serper
+payload in `companies.raw`, under the Indonesian sheet header `Alamat` — **1033 of
+1208 rows**.
+
+So nothing had to be re-scraped. The data had been arriving all along and being
+thrown away at the last step.
+
+### What shipped
+
+- `companies.address`, `drizzle/0009` + hand-written idempotent backfill `0010`.
+  Verified: 1033 of 1208 filled, matching the count measured beforehand.
+- `insertNewLead` writes it now, and `mergeIntoExisting` fills it when blank, so no
+  future sweep needs a backfill.
+- Shown on the Perusahaan screen, with a `Reputasi` column beside it (rating and
+  review count) — the same facts that were only visible inside `raw` before.
+- Added to the CSV as `Alamat`, between `Kategori Usaha` and `Kota`.
+- `formatRating` in `format.ts`: always one decimal, so a column of ratings lines
+  up rather than jumping a character width between "5" and "4,7".
+- `tests/integration/ingest.test.ts` now asserts address, rating and review count
+  survive the webhook. That test existed and passed throughout the period the
+  address was being discarded, because it only checked the fields it knew about.
+
+### Email is still 0 of 1208, and this slice does not change that
+
+The request said "alamat email dll". The address existed and was recoverable;
+**email never existed**. Not one of the 1208 scraped businesses has one, and only
+71 (5.9%) have a website to scrape one from. Anything more here is the enrichment
+slice, and its realistic yield is tens of addresses, not thousands — that
+expectation belongs in front of the work, not after it.
+
+---
+
 ## Slice — pagination and CSV export (2026-09-16)
 
 Asked for, alongside three other things: pagination, and a CSV/Excel download.
@@ -1458,11 +1498,9 @@ UI → test), nothing started until the previous slice is green.
     unit-tested, loaded by `send-context.ts` and proven against real Postgres.
 13. ~~**Pagination + CSV export.**~~ — **done 2026-09-16.** Six list screens
     paginated with true totals; leads downloadable as Excel-ready CSV.
-14. **Company detail — the address column.** ← *next.* `companies` has no `address`
-    column, `insertNewLead` normalises the address and then drops it, and 1033 of
-    1208 addresses are sitting unread in `companies.raw`. Same shape as the
-    rating/review backfill.
-15. **Vercel deployment prep** — `vercel.json`, the env checklist, and
+14. ~~**Company detail — the address column.**~~ — **done 2026-09-16.** 1033 of 1208
+    addresses recovered from `raw`; ingest stores it from now on.
+15. **Vercel deployment prep** ← *next.* — `vercel.json`, the env checklist, and
     `docs/DEPLOY.md`. The owner does the login and the deploy.
 16. **Module 5 + approvals.** Unblocked for building and testing on 2026-09-15 by a
     dummy product and dummy knowledge docs (known issue 21). Still blocked for any
@@ -1599,7 +1637,7 @@ setup in `docs/n8n-integration.md`.
    workspace. One line in `earnsQualified()` (`src/lib/scoring/classify.ts`) makes
    it hot-only; that is an owner call, not a bug fix, and the band edges themselves
    come from SPEC and are shared with the LLM rubric.
-13. **Review counts go stale and nothing refreshes them.** `mergeIntoExisting` fills
+13. **Review counts and addresses go stale and nothing refreshes them.** `mergeIntoExisting` fills
    blanks only, so a re-scrape that finds 150 reviews where we stored 37 leaves the
    old number — correct for a field a human may have corrected, wrong for a counter
    that only grows. Classification therefore drifts downward over time. Refresh
@@ -1744,6 +1782,7 @@ setup in `docs/n8n-integration.md`.
 | 62 | The CSV is tuned for **Excel with an Indonesian locale**, not for RFC 4180 | Semicolon separator, decimal comma, UTF-8 BOM. The neutral choice fails silently on the machines this product is for: one row per column A, a rating that is text, and mojibake in shop names. A machine-readable export, if one is ever needed, is a separate endpoint rather than a compromise between the two. |
 | 63 | Phone numbers are exported as `="+62…"` | `+6281234567890` in a cell is a unary-plus formula and returns 6.28E+12. The string-literal form is the one thing that renders correctly in both Excel and Sheets. Every other cell is defused against CSV injection instead, since only phone columns need to survive as written. |
 | 64 | Paging lives in the URL, in a server component | `?page=` makes a page shareable and refresh-proof, and keeps the list screens free of `'use client'` (`.claude/rules/ui.md`). The cost is a round trip per page, which is the right cost for a table of 1208 rows that changes when scoring runs. |
+| 65 | `companies.address` is stored **whole**, not split into kelurahan/kecamatan | The n8n workflow already extracts `city` from the address, so the one derived field that matters exists. Parsing the rest would be guesswork against Indonesian address formats, and the thing an address is for — telling a salesperson where to go — needs it intact. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
