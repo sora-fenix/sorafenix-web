@@ -978,6 +978,12 @@ So **`PAGES` is the only lever**, exactly as the sticky note guessed but could n
 prove. `JUMLAH` stays at 20: asking costs nothing, and the extra results would
 arrive without a code change if the endpoint ever honours it.
 
+> **Corrected 2026-09-20.** "Asking costs nothing" was false. Serper bills one
+> credit for a request asking up to 10 results and **two** for 11–100, so every
+> search in this sweep was charged double for results the paragraph above proves
+> never arrive. `JUMLAH` is now 10. The credit totals recorded in this section
+> and the next are therefore half of what was actually spent.
+
 The practical consequence is that a city yields up to 50 with `PAGES = [1..5]`,
 not 100, and the whole space is at most 14 400 raw results before dedupe.
 
@@ -1534,6 +1540,8 @@ workspace from. Onboarding a client becomes a row, not an n8n edit.
 | `drizzle/0012_memberships_owner_only_writes.sql` | The `memberships` policy fix. |
 | `tests/integration/rls.test.ts` | +13 cases across two new describe blocks. |
 | `src/lib/workspace/provision.ts` | Comment only — a policy it names was renamed. |
+| `n8n/workflows/sora-lead-hunter.json` | `JUMLAH` 20 → 10, and two comments that stated the billing wrongly. |
+| `docs/n8n-integration.md` | The same two corrections, in the operational guide. |
 
 ### The hole: an owner could raise their own sending limits
 
@@ -1617,6 +1625,39 @@ able to invite members. Today both layers say no, together.
 
 Gates after both changes: `typecheck` clean, `lint` clean, `test` 379 in 12
 files, `test:integration` 137 in 10 files.
+
+### `JUMLAH` 20 → 10: the sweep was paying double
+
+Costing the SaaS plan is what surfaced this. Serper bills **one** credit for a
+request asking up to 10 results and **two** for 11–100. `Search Plan` asked for
+20, on a comment that said in as many words:
+
+```js
+// Left at 20 even though Serper answers with 10: asking for more costs nothing,
+const JUMLAH = 20;
+```
+
+It is not free, and the same file already contained the measurement that makes
+the 20 pointless: four stored executions showing Serper returns at most 10
+whatever `num` asks. So the sweep paid twice per search for results that never
+arrived. **The scraping week cost ~3500 credits, not the 1750 recorded at the
+time** — past the ~2500 free tier, which is the most likely explanation for a
+sweep appearing to stop working. The free tier is also a one-time grant, not a
+weekly or monthly refill; both documents said otherwise and both are corrected.
+
+Applied by the documented procedure, because it matters here: the committed copy
+of the workflow carries the placeholder credential id
+`GANTI_DENGAN_CREDENTIAL_ANDA`, so importing the repo file would have unbound the
+Serper credential. The live workflow was exported, patched, and imported back
+onto the same id (`DKEBFaQ5a56o7ukQ`). Verified afterwards: one workflow in the
+database, credential `e9YqpYQyVr1RjeKA` still attached, `const JUMLAH = 10` live.
+The repo copy and the live export were diffed before patching and were identical,
+so nothing was overwritten.
+
+No sweep has been run since the change, so the halving is arithmetic from
+Serper's published billing, not something measured on this account. The next run
+is what will confirm it, and `pnpm leads:stats` will show whether yield is
+unchanged as expected.
 
 ---
 
@@ -1975,6 +2016,7 @@ setup in `docs/n8n-integration.md`.
 | 68 | Multi-tenant scraping decides in SORA and executes in n8n — recorded as `docs/ADR/0001`, the repo's first ADR | The search plan is business logic, and `.claude/rules/structure.md` puts business logic in `src/lib/`, not in an n8n Code node. Today's plan is derived from the calendar (`START_DATE` + `dayIndex % SLICES`) with keywords and cities as literals, which is single-tenant by construction: every tenant's space is a different size and starts on a different date. Moving the decision into SORA makes onboarding a client a row in `campaigns.target` instead of an n8n edit, and it keeps a later move off n8n cheap, since only the executor would change. n8n was kept as the executor because CLAUDE.md §1 fixes the stack and `pg-boss` is named there but not installed — replacing it is an owner question, not a design one. |
 | 69 | `workspaces` UPDATE is granted to `authenticated` as an **allowlist of columns**, never a table grant with column revokes | Measured, not assumed (2026-09-20): Postgres authorises a column write from the sum of table-level and column-level privileges, so `REVOKE UPDATE (plan)` against a live table-level `GRANT UPDATE` subtracts nothing — `has_column_privilege` returns `t` either way. A denylist migration would read like a fix, pass review, and leave the hole open. The allowlist also fails in the safe direction: forgetting to add a new column breaks a settings form loudly instead of quietly handing the tenant a lever. |
 | 70 | An RLS policy may not be more permissive than `src/lib/auth/permissions.ts`; where they disagree, the policy is the bug | Found 2026-09-20: the matrix gave `member:manage` to `owner` alone while the membership write policies admitted `owner` and `manager`. The matrix only decides for a user who goes through our UI — PostgREST with the anon key never reaches it — so the looser layer is the one that actually holds, and the stricter one is decoration. Treating the matrix as the specification and the policy as the implementation makes the gap a bug with an obvious fix instead of a design debate, which is how it was wrongly filed the first time (known issue 27). A widening is then necessarily deliberate: it takes an edit to both layers. |
+| 71 | `JUMLAH` (Serper `num`) is **10**, and the ADR makes values above it unrepresentable | Corrects decision 44 and the credit arithmetic throughout the 2026-09-07 section. Serper bills 1 credit for a request asking up to 10 results and 2 for 11–100, so `JUMLAH = 20` doubled the price of every search in the sweep — the week cost ~3500 credits against a ~2500 free tier, not the 1750 recorded at the time. It bought nothing, because the same section measures Serper returning at most 10 whatever `num` asks. The comment justifying it ("asking for more costs nothing") was the whole defect: a wrong fact, stated confidently, next to the measurement that disproved it. `campaigns.target` therefore caps `resultsPerRequest` at 10 in the Zod type rather than in a comment, so this cannot be reintroduced by editing a literal. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

@@ -118,8 +118,9 @@ const MAX_SEARCHES_PER_DAY = 260;          // hard ceiling on Serper credits
 `i % 6`. So a day runs 250 searches that are a *mix* of keywords and cities, the
 whole space is covered in six days, and day 7 lands back on slice 0 — which is
 how you measure whether new businesses are still appearing in ground you already
-swept. Seven days costs **1750 Serper credits**; the free tier is ~2500, and an
-empty result is billed like any other.
+swept. Seven days costs **1750 Serper credits** at `JUMLAH = 10`; the free tier
+is ~2500 **once for the life of the account** — it does not refill — and an empty
+result is billed like any other.
 
 `Loop Over Searches` runs the slice one search at a time through the whole chain,
 so each search POSTs its own batch with its own `idempotency_key`
@@ -131,8 +132,15 @@ executions (2026-09-01 to 2026-09-06) each put exactly 10 items into
 `Split Out Places` while `num` asked for 20, and `Extract Contacts` dropped none
 of them, so the shortfall is Serper and not our contact filter. `PAGES` is
 therefore the only lever that gets a city past 10: `[1, 2, 3, 4, 5]` gives up to
-50. `JUMLAH` stays at 20 because asking costs nothing and the extra results
-would arrive without a code change if the endpoint ever honours it.
+50.
+
+**`JUMLAH` is 10, and raising it costs double.** It was 20 until 2026-09-20, on
+the stated reasoning that "asking costs nothing". That was wrong: Serper bills
+one credit for a request asking up to 10 results and **two** for 11–100. So the
+sweep paid twice for every search while the measurement directly above says the
+extra results never arrive. The whole scraping week cost ~3500 credits, not the
+1750 recorded at the time — past the free tier, which is the likeliest reason a
+sweep would have stopped answering.
 
 The whole space is 1500 searches × 10 = **up to 15 000 raw results** before
 dedupe, spread over six days.
