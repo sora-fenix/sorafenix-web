@@ -39,7 +39,7 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
 | `pnpm test` | ✅ 379 tests, 12 files |
 | `pnpm build` | ✅ all 19 routes built |
-| `pnpm test:integration` | ✅ 124 tests, 10 files |
+| `pnpm test:integration` | ✅ 131 tests, 10 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -1511,6 +1511,81 @@ plus a local restart, not a redesign.
 
 ---
 
+## ADR 0001 + a live privilege hole it uncovered (2026-09-20)
+
+The owner is turning SORA into a sellable multi-tenant SaaS: each client picks its
+own industry (FMCG, pet shop, whatever it sells) and runs the whole loop. The
+lead hunter is the only part that is still single-tenant by construction, so it
+was designed first — `docs/ADR/0001-multi-tenant-lead-scraping.md`, the repo's
+first ADR. **No implementation code was written; the ADR is the deliverable.**
+
+Its shape in one line: the *decision* moves into SORA (`campaigns.target`, a
+per-campaign cursor, quota and budget smoothing as pure functions), the
+*execution* stays in n8n, and one workflow serves every tenant because each plan
+item carries its own `campaign_id` — which the ingest route already resolves a
+workspace from. Onboarding a client becomes a row, not an n8n edit.
+
+### What actually shipped in this commit
+
+| File | Role |
+|---|---|
+| `docs/ADR/0001-multi-tenant-lead-scraping.md` | The design. 586 lines, no code. |
+| `drizzle/0011_lock_privileged_workspace_columns.sql` | The fix below. |
+| `tests/integration/rls.test.ts` | +7 cases, `privileged workspace columns`. |
+
+### The hole: an owner could raise their own sending limits
+
+Designing the quota beside `workspaces.plan` is what surfaced it.
+`0003_rls_domain.sql:47` grants table-level UPDATE on `workspaces` to
+`authenticated`, and `0001_rls.sql:88` lets an owner update their own row. Table
+privileges cover **every column**, so an owner holding nothing but the anon key
+and their own session could PATCH through PostgREST and rewrite
+`daily_email_limit` and `daily_wa_limit` — the two columns
+`src/lib/outreach/send-context.ts:138` reads on every send. The send guard kept
+running; the number it enforced was simply chosen by the tenant it bounds.
+
+To be precise about the blast radius: this is **not** a tenant isolation break.
+It needs the `owner` role and reaches only that owner's own row. It is privilege
+escalation inside one workspace. It was also unreachable through our UI — nothing
+in the codebase updates `workspaces` at all — which is why it survived review:
+the policy was never wrong, the grant underneath it was.
+
+`autonomous_mode` was locked in the same migration. It ships `false` and is not
+wired (CLAUDE.md rule 5); locking it now costs nothing and means wiring it later
+cannot silently become self-service.
+
+### The obvious fix does not work, and that is the part worth remembering
+
+The first proposal was `REVOKE UPDATE (plan, ...) ON workspaces FROM
+authenticated`. Measured on a scratch table with `has_column_privilege` before
+writing the migration:
+
+```
+A: table grant + column revoke -> can write the revoked column:  t
+B: table revoke + column grant -> can write the revoked column:  f
+```
+
+Postgres checks a column write against the **sum** of table-level and
+column-level privileges, so a column REVOKE against a surviving table-level
+GRANT subtracts nothing. Scenario A is a migration that reads like a fix, passes
+review, and changes nothing. The migration therefore drops the table-level grant
+and grants back the four columns an owner legitimately edits (`name`, `slug`,
+`timezone`, `updated_at`).
+
+### Proved, not assumed
+
+The seven new cases pass against the migrated database. They were then re-run
+with the table-level grant deliberately reinstated on the local database:
+**5 of 19 failed**, including the `has_column_privilege` assertion that pins the
+grant shape itself. The grant was restored immediately afterwards and verified
+(`plan=false email_limit=false name=true`). A test that cannot fail proves
+nothing, so this is recorded rather than the bare green run.
+
+Gates after the change: `typecheck` clean, `lint` clean, `test` 379 in 12 files,
+`test:integration` 131 in 10 files.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
@@ -1779,6 +1854,18 @@ setup in `docs/n8n-integration.md`.
 26. **No cron route and no `crons` entry in `vercel.json`.** SPEC §7 wants
    `/api/cron/sequences` every five minutes. Both belong to the slice that builds
    the runner.
+27. **A manager can promote themselves to owner.** Found while auditing the
+   `workspaces` grants (2026-09-20) and deliberately *not* fixed in that
+   migration, because it is a policy question rather than a grant bug and the
+   answer is a product decision. `memberships_update_admin`
+   (`drizzle/0001_rls.sql:125`) checks only that the actor holds `owner` or
+   `manager` in the workspace; neither `USING` nor `WITH CHECK` compares the
+   target row's new role against the actor's own. So a manager can set their own
+   membership to `owner` and then reach the owner-only actions in
+   `src/lib/auth/permissions.ts` — including the UU PDP hard-delete. `sales` and
+   `viewer` are *not* affected: the policy blocks them outright. Fixing it means
+   deciding whether managers may promote at all, which the owner should answer
+   before a policy is rewritten.
 
 ---
 
@@ -1853,6 +1940,8 @@ setup in `docs/n8n-integration.md`.
 | 65 | `companies.address` is stored **whole**, not split into kelurahan/kecamatan | The n8n workflow already extracts `city` from the address, so the one derived field that matters exists. Parsing the rest would be guesswork against Indonesian address formats, and the thing an address is for — telling a salesperson where to go — needs it intact. |
 | 66 | Vercel functions are pinned to **`sin1`** (Singapore) | Nearest region to Jawa Timur, and it keeps the app beside a Supabase project in the same region. Latency to the database is paid on every query, not once. |
 | 67 | Insforge was **not** adopted; Supabase stays | Owner decision, 2026-09-16. Supabase holds Postgres, Auth, RLS and eleven applied migrations. Replacing it means rewriting auth, every RLS policy and the Drizzle path — weeks of work, and it would put the tenant isolation that integration tests currently prove back into the unproven column. |
+| 68 | Multi-tenant scraping decides in SORA and executes in n8n — recorded as `docs/ADR/0001`, the repo's first ADR | The search plan is business logic, and `.claude/rules/structure.md` puts business logic in `src/lib/`, not in an n8n Code node. Today's plan is derived from the calendar (`START_DATE` + `dayIndex % SLICES`) with keywords and cities as literals, which is single-tenant by construction: every tenant's space is a different size and starts on a different date. Moving the decision into SORA makes onboarding a client a row in `campaigns.target` instead of an n8n edit, and it keeps a later move off n8n cheap, since only the executor would change. n8n was kept as the executor because CLAUDE.md §1 fixes the stack and `pg-boss` is named there but not installed — replacing it is an owner question, not a design one. |
+| 69 | `workspaces` UPDATE is granted to `authenticated` as an **allowlist of columns**, never a table grant with column revokes | Measured, not assumed (2026-09-20): Postgres authorises a column write from the sum of table-level and column-level privileges, so `REVOKE UPDATE (plan)` against a live table-level `GRANT UPDATE` subtracts nothing — `has_column_privilege` returns `t` either way. A denylist migration would read like a fix, pass review, and leave the hole open. The allowlist also fails in the safe direction: forgetting to add a new column breaks a settings form loudly instead of quietly handing the tenant a lever. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

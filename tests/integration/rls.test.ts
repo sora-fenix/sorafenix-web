@@ -218,3 +218,74 @@ describe('privileged connection', () => {
     expect(row?.n).toBe(1)
   })
 })
+
+// -----------------------------------------------------------------------------
+// Privilege escalation inside one's own workspace
+// -----------------------------------------------------------------------------
+
+describe('privileged workspace columns', () => {
+  // `workspaces_update_owner` lets an owner update their own workspace row, and
+  // 0003 granted UPDATE at the table level, which covers every column. So until
+  // 0011 an owner could raise their own sending limits with nothing but the anon
+  // key. The policy was never the problem and these cases do not test it; they
+  // test the column grants underneath it.
+
+  const PRIVILEGED = [
+    ['plan', `plan = 'business'`],
+    ['daily_email_limit', `daily_email_limit = 100000`],
+    ['daily_wa_limit', `daily_wa_limit = 100000`],
+    ['autonomous_mode', `autonomous_mode = true`],
+  ] as const
+
+  for (const [column, assignment] of PRIVILEGED) {
+    it(`owner cannot rewrite ${column} on their own workspace`, async () => {
+      const message = await probeRejection(
+        reserved,
+        alpha.userId,
+        `update workspaces set ${assignment} where id = $1`,
+        [alpha.workspaceId],
+      )
+      expect(message).toMatch(/permission denied/i)
+    })
+  }
+
+  it('leaves the send guard reading the limit the operator set', async () => {
+    // The point of the four cases above, stated as the outcome that matters:
+    // src/lib/outreach/send-context.ts reads these two columns on every send.
+    const [row] = await reserved<{ email: number; wa: number }[]>`
+      select daily_email_limit as email, daily_wa_limit as wa
+      from workspaces where id = ${alpha.workspaceId}`
+    expect(row?.email).toBe(200)
+    expect(row?.wa).toBe(100)
+  })
+
+  it('still lets an owner edit the settings that are genuinely theirs', async () => {
+    // The fix must not be a blanket revoke: renaming a workspace and setting its
+    // timezone are owner settings, and a future settings form depends on them.
+    const updated = await asUser(reserved, alpha.userId, () =>
+      reserved.unsafe(
+        `update workspaces set name = $1, timezone = $2 where id = $3 returning id`,
+        ['Renamed by owner', 'Asia/Makassar', alpha.workspaceId],
+      ),
+    )
+    expect(updated.length).toBe(1)
+  })
+
+  it('grants UPDATE on an allowlist, not a denylist', async () => {
+    // Postgres sums table-level and column-level privileges, so a column REVOKE
+    // against a surviving table-level GRANT is a no-op that still reads like a
+    // fix. This asserts the shape of the grant itself, which is the part that
+    // was wrong, and fails if anyone reinstates the table-level grant.
+    const [row] = await reserved<{
+      plan: boolean
+      email: boolean
+      name: boolean
+    }[]>`
+      select has_column_privilege('authenticated', 'workspaces', 'plan', 'UPDATE') as plan,
+             has_column_privilege('authenticated', 'workspaces', 'daily_email_limit', 'UPDATE') as email,
+             has_column_privilege('authenticated', 'workspaces', 'name', 'UPDATE') as name`
+    expect(row?.plan).toBe(false)
+    expect(row?.email).toBe(false)
+    expect(row?.name).toBe(true)
+  })
+})

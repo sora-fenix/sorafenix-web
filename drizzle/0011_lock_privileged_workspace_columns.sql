@@ -1,0 +1,46 @@
+-- Stop a workspace owner from granting themselves paid entitlements.
+--
+-- `0003_rls_domain.sql` grants table-level UPDATE on `workspaces` to
+-- `authenticated`, and `0001_rls.sql` adds `workspaces_update_owner`, which lets
+-- an owner update their own workspace row. Table-level UPDATE covers EVERY
+-- column, so an owner holding nothing but the anon key and their own session can
+-- PATCH the row through PostgREST and rewrite:
+--
+--   * `daily_email_limit` / `daily_wa_limit` — read by the send guard on every
+--     send (`src/lib/outreach/send-context.ts:138`). The guard still runs; the
+--     number it enforces was simply chosen by the tenant it is meant to bound.
+--   * `autonomous_mode` — ships false and is deliberately not wired to skip
+--     approval (CLAUDE.md rule 5). Locked now, while locking it is free, so that
+--     wiring it later cannot silently become self-service.
+--   * `plan` — cosmetic today, but ADR 0001 puts the scraping quota beside it,
+--     at which point this column spends real money on the shared Serper account.
+--
+-- This is NOT a tenant isolation break: it needs the `owner` role and it only
+-- reaches that owner's own row. It is privilege escalation inside one workspace.
+--
+-- WHY NOT THE OBVIOUS ONE-LINER. `REVOKE UPDATE (plan) ON workspaces FROM
+-- authenticated` does nothing here. Postgres checks column UPDATE against the
+-- sum of table-level and column-level privileges, so a table-level grant keeps
+-- authorising every column and the revoke has nothing to subtract. Measured
+-- before writing this, with `has_column_privilege` on a scratch table:
+--
+--   table grant + column revoke -> can write the revoked column:  t
+--   table revoke + column grant -> can write the revoked column:  f
+--
+-- So the table-level grant has to go, and the columns an owner legitimately
+-- edits are granted back one by one. Anything not named below is now unwritable
+-- through the RLS path, which is the safe default: adding a column to this list
+-- is a deliberate act, forgetting to add one fails loudly in the app rather than
+-- quietly in the tenant's favour.
+--
+-- `updated_at` is in the allowlist on purpose. It carries no security meaning,
+-- and a settings form that renames a workspace will want to bump it.
+--
+-- The privileged path is unaffected: `DATABASE_URL` and the service-role key do
+-- not go through these grants, so `provisionWorkspace`, admin tooling and
+-- migrations keep working. Only the browser/PostgREST path is narrowed.
+
+REVOKE UPDATE ON "workspaces" FROM "authenticated";
+--> statement-breakpoint
+GRANT UPDATE ("name", "slug", "timezone", "updated_at")
+  ON "workspaces" TO "authenticated";

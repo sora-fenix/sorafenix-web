@@ -78,6 +78,13 @@
       "when": 1789538328648,
       "tag": "0010_backfill_company_address",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789538329648,
+      "tag": "0011_lock_privileged_workspace_columns",
+      "breakpoints": true
     }
   ]
 }
