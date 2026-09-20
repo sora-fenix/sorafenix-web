@@ -289,3 +289,121 @@ describe('privileged workspace columns', () => {
     expect(row?.name).toBe(true)
   })
 })
+
+// -----------------------------------------------------------------------------
+// Membership writes belong to the owner alone
+// -----------------------------------------------------------------------------
+
+describe('membership writes are owner-only', () => {
+  // `permissions.ts` gives `member:manage` to owner alone and the unit suite
+  // asserts a manager does not have it. Until 0012 the policies admitted
+  // ARRAY['owner', 'manager'], so a manager who skipped our UI and talked to
+  // PostgREST directly got the power the matrix denies. These cases pin the two
+  // layers together; the matrix side is covered by tests/unit/permissions.test.ts.
+  let managerId: string
+  let outsiderId: string
+
+  beforeAll(async () => {
+    // Privileged setup, not the thing under test.
+    const [manager] = await reserved<{ id: string }[]>`
+      insert into auth.users (id, instance_id, aud, role, email)
+      values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
+              'authenticated', 'authenticated', 'rls-manager@example.test')
+      returning id`
+    const [outsider] = await reserved<{ id: string }[]>`
+      insert into auth.users (id, instance_id, aud, role, email)
+      values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
+              'authenticated', 'authenticated', 'rls-outsider@example.test')
+      returning id`
+    if (manager === undefined || outsider === undefined) {
+      throw new Error('manager fixture setup failed')
+    }
+    managerId = manager.id
+    outsiderId = outsider.id
+
+    await reserved`insert into memberships (workspace_id, user_id, role)
+                   values (${alpha.workspaceId}, ${managerId}, 'manager')`
+  })
+
+  it('manager cannot promote themselves to owner', async () => {
+    await asUser(reserved, managerId, async () => {
+      const updated = await reserved.unsafe(
+        `update memberships set role = 'owner'
+         where workspace_id = $1 and user_id = $2 returning id`,
+        [alpha.workspaceId, managerId],
+      )
+      expect(updated.length).toBe(0)
+    })
+
+    const [row] = await reserved<{ role: string }[]>`
+      select role from memberships
+      where workspace_id = ${alpha.workspaceId} and user_id = ${managerId}`
+    expect(row?.role).toBe('manager')
+  })
+
+  it('manager cannot demote the owner', async () => {
+    // The takeover half: the old UPDATE policy constrained who was acting, never
+    // which row was touched.
+    await asUser(reserved, managerId, async () => {
+      const updated = await reserved.unsafe(
+        `update memberships set role = 'viewer'
+         where workspace_id = $1 and user_id = $2 returning id`,
+        [alpha.workspaceId, alpha.userId],
+      )
+      expect(updated.length).toBe(0)
+    })
+
+    const [row] = await reserved<{ role: string }[]>`
+      select role from memberships
+      where workspace_id = ${alpha.workspaceId} and user_id = ${alpha.userId}`
+    expect(row?.role).toBe('owner')
+  })
+
+  it('manager cannot invite a new member', async () => {
+    const message = await probeRejection(
+      reserved,
+      managerId,
+      `insert into memberships (workspace_id, user_id, role) values ($1, $2, 'sales')`,
+      [alpha.workspaceId, outsiderId],
+    )
+    expect(message).toMatch(/row-level security/i)
+  })
+
+  it('manager cannot remove a member', async () => {
+    await asUser(reserved, managerId, async () => {
+      const deleted = await reserved.unsafe(
+        `delete from memberships where workspace_id = $1 and user_id = $2 returning id`,
+        [alpha.workspaceId, alpha.userId],
+      )
+      expect(deleted.length).toBe(0)
+    })
+  })
+
+  it('manager can still see who is in the workspace', async () => {
+    // memberships_select_member is deliberately untouched — tightening writes
+    // must not blind the members list.
+    const rows = await asUser(reserved, managerId, () =>
+      reserved.unsafe(`select id from memberships where workspace_id = $1`, [
+        alpha.workspaceId,
+      ]),
+    )
+    expect(rows.length).toBeGreaterThan(1)
+  })
+
+  it('owner can still manage members', async () => {
+    // The fix must not lock the legitimate path: without this, a policy that
+    // rejects everyone would pass every case above.
+    const updated = await asUser(reserved, alpha.userId, () =>
+      reserved.unsafe(
+        `update memberships set role = 'sales'
+         where workspace_id = $1 and user_id = $2 returning id`,
+        [alpha.workspaceId, managerId],
+      ),
+    )
+    expect(updated.length).toBe(1)
+
+    // Put it back so later cases in this file see the fixture they expect.
+    await reserved`update memberships set role = 'manager'
+                   where workspace_id = ${alpha.workspaceId} and user_id = ${managerId}`
+  })
+})

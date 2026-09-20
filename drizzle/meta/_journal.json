@@ -85,6 +85,13 @@
       "when": 1789538329648,
       "tag": "0011_lock_privileged_workspace_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789538330648,
+      "tag": "0012_memberships_owner_only_writes",
+      "breakpoints": true
     }
   ]
 }

@@ -39,7 +39,7 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
 | `pnpm test` | ✅ 379 tests, 12 files |
 | `pnpm build` | ✅ all 19 routes built |
-| `pnpm test:integration` | ✅ 131 tests, 10 files |
+| `pnpm test:integration` | ✅ 137 tests, 10 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -1525,13 +1525,15 @@ per-campaign cursor, quota and budget smoothing as pure functions), the
 item carries its own `campaign_id` — which the ingest route already resolves a
 workspace from. Onboarding a client becomes a row, not an n8n edit.
 
-### What actually shipped in this commit
+### What actually shipped
 
 | File | Role |
 |---|---|
 | `docs/ADR/0001-multi-tenant-lead-scraping.md` | The design. 586 lines, no code. |
-| `drizzle/0011_lock_privileged_workspace_columns.sql` | The fix below. |
-| `tests/integration/rls.test.ts` | +7 cases, `privileged workspace columns`. |
+| `drizzle/0011_lock_privileged_workspace_columns.sql` | The `workspaces` grant fix. |
+| `drizzle/0012_memberships_owner_only_writes.sql` | The `memberships` policy fix. |
+| `tests/integration/rls.test.ts` | +13 cases across two new describe blocks. |
+| `src/lib/workspace/provision.ts` | Comment only — a policy it names was renamed. |
 
 ### The hole: an owner could raise their own sending limits
 
@@ -1581,8 +1583,40 @@ grant shape itself. The grant was restored immediately afterwards and verified
 (`plan=false email_limit=false name=true`). A test that cannot fail proves
 nothing, so this is recorded rather than the bare green run.
 
-Gates after the change: `typecheck` clean, `lint` clean, `test` 379 in 12 files,
-`test:integration` 131 in 10 files.
+### The same audit, one layer down: membership writes
+
+`0011` closed the grant hole on `workspaces`. Auditing the neighbouring table
+found a second one, of a different kind, and it was worse.
+
+`src/lib/auth/permissions.ts` gives `member:manage` to `owner` alone, and
+`tests/unit/permissions.test.ts:20` asserts a manager does not have it. All three
+membership *write* policies in `0001_rls.sql` admitted
+`ARRAY['owner', 'manager']`. So the app and the database disagreed, and a manager
+who skipped our UI got the power the matrix denies. The UPDATE policy also
+constrained only **who** was acting and never **which row** was touched, so a
+manager could promote themselves to `owner` *and* demote the real owner to
+`viewer` — a full workspace takeover, including `workspace:manage` and the UU PDP
+hard-delete, by someone hired to run campaigns.
+
+This was first written up as known issue 27, an open product question for the
+owner. That was wrong and is corrected here: `permissions.ts` had already decided
+it, so there was nothing to decide — only a database that had not been told.
+`drizzle/0012_memberships_owner_only_writes.sql` aligns the two and renames the
+policies `_admin` → `_owner`, because a policy whose name says "admin" while it
+means "owner" is what the next reader trusts without checking.
+
+Six new cases, and they were re-run against the old policies before being
+believed: **all six failed**, with `manager cannot promote themselves to owner`
+reporting `expected 1 to be +0` — the promotion had genuinely succeeded. Nothing
+in the app writes `memberships` through the RLS path (`members.ts` only reads,
+and `provisionWorkspace` uses the privileged handle), so the tightening carries
+no behaviour risk.
+
+Still open, and now visible rather than latent: whether a manager *should* be
+able to invite members. Today both layers say no, together.
+
+Gates after both changes: `typecheck` clean, `lint` clean, `test` 379 in 12
+files, `test:integration` 137 in 10 files.
 
 ---
 
@@ -1854,18 +1888,16 @@ setup in `docs/n8n-integration.md`.
 26. **No cron route and no `crons` entry in `vercel.json`.** SPEC §7 wants
    `/api/cron/sequences` every five minutes. Both belong to the slice that builds
    the runner.
-27. **A manager can promote themselves to owner.** Found while auditing the
-   `workspaces` grants (2026-09-20) and deliberately *not* fixed in that
-   migration, because it is a policy question rather than a grant bug and the
-   answer is a product decision. `memberships_update_admin`
-   (`drizzle/0001_rls.sql:125`) checks only that the actor holds `owner` or
-   `manager` in the workspace; neither `USING` nor `WITH CHECK` compares the
-   target row's new role against the actor's own. So a manager can set their own
-   membership to `owner` and then reach the owner-only actions in
-   `src/lib/auth/permissions.ts` — including the UU PDP hard-delete. `sales` and
-   `viewer` are *not* affected: the policy blocks them outright. Fixing it means
-   deciding whether managers may promote at all, which the owner should answer
-   before a policy is rewritten.
+27. ~~**A manager can promote themselves to owner.**~~ **Closed 2026-09-20** by
+   `drizzle/0012_memberships_owner_only_writes.sql`. It was first recorded here
+   as an open product question; that framing was wrong. `permissions.ts` already
+   gave `member:manage` to `owner` alone and the unit suite already asserted a
+   manager does not have it — the three write policies in `0001_rls.sql` simply
+   disagreed with the matrix, so there was nothing for the owner to decide.
+   Aligning the two was the whole fix. The remaining product question is much
+   smaller and is now open rather than latent: *should* a manager be allowed to
+   invite members? If yes, that is a deliberate edit to `permissions.ts` **and**
+   these policies together, which is the point of making them say the same thing.
 
 ---
 
@@ -1942,6 +1974,7 @@ setup in `docs/n8n-integration.md`.
 | 67 | Insforge was **not** adopted; Supabase stays | Owner decision, 2026-09-16. Supabase holds Postgres, Auth, RLS and eleven applied migrations. Replacing it means rewriting auth, every RLS policy and the Drizzle path — weeks of work, and it would put the tenant isolation that integration tests currently prove back into the unproven column. |
 | 68 | Multi-tenant scraping decides in SORA and executes in n8n — recorded as `docs/ADR/0001`, the repo's first ADR | The search plan is business logic, and `.claude/rules/structure.md` puts business logic in `src/lib/`, not in an n8n Code node. Today's plan is derived from the calendar (`START_DATE` + `dayIndex % SLICES`) with keywords and cities as literals, which is single-tenant by construction: every tenant's space is a different size and starts on a different date. Moving the decision into SORA makes onboarding a client a row in `campaigns.target` instead of an n8n edit, and it keeps a later move off n8n cheap, since only the executor would change. n8n was kept as the executor because CLAUDE.md §1 fixes the stack and `pg-boss` is named there but not installed — replacing it is an owner question, not a design one. |
 | 69 | `workspaces` UPDATE is granted to `authenticated` as an **allowlist of columns**, never a table grant with column revokes | Measured, not assumed (2026-09-20): Postgres authorises a column write from the sum of table-level and column-level privileges, so `REVOKE UPDATE (plan)` against a live table-level `GRANT UPDATE` subtracts nothing — `has_column_privilege` returns `t` either way. A denylist migration would read like a fix, pass review, and leave the hole open. The allowlist also fails in the safe direction: forgetting to add a new column breaks a settings form loudly instead of quietly handing the tenant a lever. |
+| 70 | An RLS policy may not be more permissive than `src/lib/auth/permissions.ts`; where they disagree, the policy is the bug | Found 2026-09-20: the matrix gave `member:manage` to `owner` alone while the membership write policies admitted `owner` and `manager`. The matrix only decides for a user who goes through our UI — PostgREST with the anon key never reaches it — so the looser layer is the one that actually holds, and the stricter one is decoration. Treating the matrix as the specification and the policy as the implementation makes the gap a bug with an obvious fix instead of a design debate, which is how it was wrongly filed the first time (known issue 27). A widening is then necessarily deliberate: it takes an edit to both layers. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

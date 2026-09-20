@@ -10,8 +10,8 @@ import { slugCandidate, slugifyWorkspaceName } from './slug'
  * Creates a workspace and makes its creator the owner.
  *
  * This is the one write the browser genuinely cannot make. `drizzle/0001_rls.sql`
- * gives `workspaces` no INSERT policy at all, and `memberships_insert_admin`
- * requires the caller to already hold owner or manager in the target workspace —
+ * gives `workspaces` no INSERT policy at all, and `memberships_insert_owner`
+ * requires the caller to already hold owner in the target workspace —
  * so the creator's own first membership row is unreachable through the RLS path
  * by construction, not by oversight. It has to happen server-side.
  *
