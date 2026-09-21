@@ -21,6 +21,21 @@ describe('can', () => {
     expect(can('manager', 'workspace:manage')).toBe(false)
   })
 
+  it('lets a manager invite but not change roles or remove', () => {
+    // The two halves of the old `member:manage` were split on 2026-09-21: the
+    // change-role half is what let a manager promote themselves to owner.
+    // Whether a manager may invite at `owner` is not a question this matrix can
+    // answer — it never sees the role being granted — and is pinned in
+    // tests/integration/rls.test.ts instead.
+    expect(can('manager', 'member:invite')).toBe(true)
+    expect(can('manager', 'member:manage')).toBe(false)
+  })
+
+  it('keeps invite away from sales and viewer', () => {
+    expect(can('sales', 'member:invite')).toBe(false)
+    expect(can('viewer', 'member:invite')).toBe(false)
+  })
+
   it('lets sales work leads and send, but never approve their own drafts', () => {
     expect(can('sales', 'lead:write')).toBe(true)
     expect(can('sales', 'message:send')).toBe(true)

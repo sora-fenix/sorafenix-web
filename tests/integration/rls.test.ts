@@ -294,14 +294,24 @@ describe('privileged workspace columns', () => {
 // Membership writes belong to the owner alone
 // -----------------------------------------------------------------------------
 
-describe('membership writes are owner-only', () => {
-  // `permissions.ts` gives `member:manage` to owner alone and the unit suite
-  // asserts a manager does not have it. Until 0012 the policies admitted
-  // ARRAY['owner', 'manager'], so a manager who skipped our UI and talked to
-  // PostgREST directly got the power the matrix denies. These cases pin the two
-  // layers together; the matrix side is covered by tests/unit/permissions.test.ts.
+describe('membership writes', () => {
+  // Two rules, landed a day apart, and the cases below hold both at once:
+  //
+  //   0012 — changing a role and removing a member belong to the owner alone.
+  //          Until then the policies admitted ARRAY['owner', 'manager'], so a
+  //          manager who skipped our UI and talked to PostgREST directly could
+  //          promote themselves and demote the owner.
+  //   0013 — a manager may invite (owner decision 2026-09-21), but never at
+  //          `owner`, or the first rule is reachable through a second account.
+  //
+  // The matrix half is in tests/unit/permissions.test.ts. It cannot express the
+  // `owner` ceiling, because `can()` never sees the role being granted — that
+  // half only exists here.
   let managerId: string
   let outsiderId: string
+  let outsider2Id: string
+  let outsider3Id: string
+  let outsider4Id: string
 
   beforeAll(async () => {
     // Privileged setup, not the thing under test.
@@ -310,16 +320,29 @@ describe('membership writes are owner-only', () => {
       values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
               'authenticated', 'authenticated', 'rls-manager@example.test')
       returning id`
-    const [outsider] = await reserved<{ id: string }[]>`
+    // Four, because a successful invite consumes one: the unique index on
+    // (workspace_id, user_id) means the same person cannot be invited twice.
+    const outsiders = await reserved<{ id: string }[]>`
       insert into auth.users (id, instance_id, aud, role, email)
-      values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
-              'authenticated', 'authenticated', 'rls-outsider@example.test')
+      select gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
+             'authenticated', 'authenticated', 'rls-outsider-' || n || '@example.test'
+      from generate_series(1, 4) as n
       returning id`
-    if (manager === undefined || outsider === undefined) {
+    const [first, second, third, fourth] = outsiders
+    if (
+      manager === undefined ||
+      first === undefined ||
+      second === undefined ||
+      third === undefined ||
+      fourth === undefined
+    ) {
       throw new Error('manager fixture setup failed')
     }
     managerId = manager.id
-    outsiderId = outsider.id
+    outsiderId = first.id
+    outsider2Id = second.id
+    outsider3Id = third.id
+    outsider4Id = fourth.id
 
     await reserved`insert into memberships (workspace_id, user_id, role)
                    values (${alpha.workspaceId}, ${managerId}, 'manager')`
@@ -359,12 +382,66 @@ describe('membership writes are owner-only', () => {
     expect(row?.role).toBe('owner')
   })
 
-  it('manager cannot invite a new member', async () => {
+  it('manager can invite a member below owner', async () => {
+    const inserted = await asUser(reserved, managerId, () =>
+      reserved.unsafe(
+        `insert into memberships (workspace_id, user_id, role)
+         values ($1, $2, 'sales') returning id`,
+        [alpha.workspaceId, outsiderId],
+      ),
+    )
+    expect(inserted.length).toBe(1)
+  })
+
+  it('manager can invite another manager, which is lateral not upward', async () => {
+    const inserted = await asUser(reserved, managerId, () =>
+      reserved.unsafe(
+        `insert into memberships (workspace_id, user_id, role)
+         values ($1, $2, 'manager') returning id`,
+        [alpha.workspaceId, outsider2Id],
+      ),
+    )
+    expect(inserted.length).toBe(1)
+  })
+
+  it('manager cannot mint an owner', async () => {
+    // Without this clause the 0012 fix is cosmetic: a manager barred from
+    // promoting themselves could invite a second account as owner and sign in
+    // as it, reaching workspace:manage and the UU PDP hard-delete by another
+    // door. This is the half permissions.ts structurally cannot express.
     const message = await probeRejection(
       reserved,
       managerId,
-      `insert into memberships (workspace_id, user_id, role) values ($1, $2, 'sales')`,
-      [alpha.workspaceId, outsiderId],
+      `insert into memberships (workspace_id, user_id, role) values ($1, $2, 'owner')`,
+      [alpha.workspaceId, outsider3Id],
+    )
+    expect(message).toMatch(/row-level security/i)
+
+    const [row] = await reserved<{ n: number }[]>`
+      select count(*)::int as n from memberships
+      where workspace_id = ${alpha.workspaceId} and user_id = ${outsider3Id}`
+    expect(row?.n).toBe(0)
+  })
+
+  it('owner can still invite an owner', async () => {
+    // The ceiling applies to managers, not to the owner granting co-ownership.
+    const inserted = await asUser(reserved, alpha.userId, () =>
+      reserved.unsafe(
+        `insert into memberships (workspace_id, user_id, role)
+         values ($1, $2, 'owner') returning id`,
+        [alpha.workspaceId, outsider3Id],
+      ),
+    )
+    expect(inserted.length).toBe(1)
+  })
+
+  it('sales cannot invite anyone', async () => {
+    // outsiderId was invited as `sales` above, so this is a real sales member.
+    const message = await probeRejection(
+      reserved,
+      outsiderId,
+      `insert into memberships (workspace_id, user_id, role) values ($1, $2, 'viewer')`,
+      [alpha.workspaceId, outsider4Id],
     )
     expect(message).toMatch(/row-level security/i)
   })

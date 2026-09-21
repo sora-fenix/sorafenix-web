@@ -1661,6 +1661,55 @@ unchanged as expected.
 
 ---
 
+## Managers may invite, but may not mint an owner (2026-09-21)
+
+Owner decision: managers should be able to staff their own team. Implementing it
+as stated would have undone `0012` the day after it landed, because
+`member:manage` bundles three powers and the dangerous one is not invite:
+
+| Power | Before 0012 | 0012 | 0013 (now) |
+|---|---|---|---|
+| invite a member | owner + manager | owner | **owner + manager** |
+| change a member's role | owner + manager | owner | owner |
+| remove a member | owner + manager | owner | owner |
+
+So the action was split: `member:invite` is new and goes to owner and manager;
+`member:manage` keeps its name, loses invite, and stays owner-only. UPDATE and
+DELETE policies are untouched.
+
+### The ceiling the matrix structurally cannot enforce
+
+A manager barred from promoting themselves can still invite a *second account* as
+`owner` and sign in as it. Same escalation, different door. So the INSERT policy
+carries `AND "role" <> 'owner'` for the manager branch: a manager may invite at
+`manager`, `sales` or `viewer`, never at `owner`. Inviting another manager is
+allowed — it is lateral, and a manager who cannot change roles cannot climb.
+
+`permissions.ts` cannot express this half at all: `can()` takes a role and an
+action and never sees the role being *granted*. That is not a gap to close later,
+it is the boundary between the two layers, and decision 70 already requires both
+to agree before a write lands.
+
+Five new integration cases, one removed (`manager cannot invite a new member`, now
+false). The ceiling was verified by deleting `AND "role" <> 'owner'` from the live
+policy and re-running: **exactly one case failed**, `manager cannot mint an owner`,
+reporting `expected '' to match /row-level security/i` — an empty error message,
+meaning the insert had succeeded. So the clause is precisely what holds that line,
+and nothing else in the suite was standing in for it.
+
+Consequence the owner accepted: **a manager can invite but cannot remove.** An
+invitation to the wrong person needs an owner to undo. Splitting a `member:remove`
+action is the fix if that turns out to bite; it was not built on speculation.
+
+Not reachable through the app yet — there is still no invite flow (known issue 4).
+This is the database half, landed together with the matrix so the two never
+disagree in the window between.
+
+Gates: `typecheck` clean, `lint` clean, `test` 381 in 12 files,
+`test:integration` 141 in 10 files.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
@@ -1935,10 +1984,11 @@ setup in `docs/n8n-integration.md`.
    gave `member:manage` to `owner` alone and the unit suite already asserted a
    manager does not have it — the three write policies in `0001_rls.sql` simply
    disagreed with the matrix, so there was nothing for the owner to decide.
-   Aligning the two was the whole fix. The remaining product question is much
-   smaller and is now open rather than latent: *should* a manager be allowed to
-   invite members? If yes, that is a deliberate edit to `permissions.ts` **and**
-   these policies together, which is the point of making them say the same thing.
+   Aligning the two was the whole fix. The remaining product question — *should*
+   a manager be allowed to invite members? — was answered **yes** by the owner on
+   2026-09-21 and implemented as `drizzle/0013_managers_may_invite.sql` plus a
+   split in the matrix. It took an edit to both layers, which is the point of
+   having made them say the same thing.
 
 ---
 
@@ -2017,6 +2067,7 @@ setup in `docs/n8n-integration.md`.
 | 69 | `workspaces` UPDATE is granted to `authenticated` as an **allowlist of columns**, never a table grant with column revokes | Measured, not assumed (2026-09-20): Postgres authorises a column write from the sum of table-level and column-level privileges, so `REVOKE UPDATE (plan)` against a live table-level `GRANT UPDATE` subtracts nothing — `has_column_privilege` returns `t` either way. A denylist migration would read like a fix, pass review, and leave the hole open. The allowlist also fails in the safe direction: forgetting to add a new column breaks a settings form loudly instead of quietly handing the tenant a lever. |
 | 70 | An RLS policy may not be more permissive than `src/lib/auth/permissions.ts`; where they disagree, the policy is the bug | Found 2026-09-20: the matrix gave `member:manage` to `owner` alone while the membership write policies admitted `owner` and `manager`. The matrix only decides for a user who goes through our UI — PostgREST with the anon key never reaches it — so the looser layer is the one that actually holds, and the stricter one is decoration. Treating the matrix as the specification and the policy as the implementation makes the gap a bug with an obvious fix instead of a design debate, which is how it was wrongly filed the first time (known issue 27). A widening is then necessarily deliberate: it takes an edit to both layers. |
 | 71 | `JUMLAH` (Serper `num`) is **10**, and the ADR makes values above it unrepresentable | Corrects decision 44 and the credit arithmetic throughout the 2026-09-07 section. Serper bills 1 credit for a request asking up to 10 results and 2 for 11–100, so `JUMLAH = 20` doubled the price of every search in the sweep — the week cost ~3500 credits against a ~2500 free tier, not the 1750 recorded at the time. It bought nothing, because the same section measures Serper returning at most 10 whatever `num` asks. The comment justifying it ("asking for more costs nothing") was the whole defect: a wrong fact, stated confidently, next to the measurement that disproved it. `campaigns.target` therefore caps `resultsPerRequest` at 10 in the Zod type rather than in a comment, so this cannot be reintroduced by editing a literal. |
+| 72 | `member:invite` is split out of `member:manage`, and the "not at `owner`" ceiling lives in the RLS policy rather than the matrix | Owner decision 2026-09-21 was that managers may invite. Granting `member:manage` would have restored the takeover `0012` had just closed, since that action also carries change-role. Splitting keeps the answer to the question actually asked. The ceiling cannot live in `permissions.ts` because `can(role, action)` never sees the role being granted — a manager inviting at `owner` is indistinguishable there from inviting at `viewer`. Putting it in the `WITH CHECK` is not a workaround but the correct layer: the matrix answers "may this person invite at all", the policy answers "at what level". |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

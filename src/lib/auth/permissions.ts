@@ -10,7 +10,15 @@ export type Role = (typeof ROLES)[number]
 
 export const ACTIONS = [
   'workspace:manage', // rename, plan, sending limits, hard-delete
-  'member:manage', // invite, change role, remove
+  /**
+   * Add someone to the workspace. Split from `member:manage` on 2026-09-21 so a
+   * manager can staff their own team without also being able to change roles —
+   * which is what let a manager promote themselves to owner and demote the real
+   * one before `drizzle/0012`. A manager may not invite at `owner`; the RLS
+   * policy enforces that half, since the matrix cannot see the role being granted.
+   */
+  'member:invite',
+  'member:manage', // change an existing member's role, remove a member
   'campaign:manage', // create, pause, edit targeting
   'knowledge:manage', // upload and edit knowledge_docs
   'lead:write', // edit lead fields, reassign owner
@@ -23,6 +31,7 @@ export type Action = (typeof ACTIONS)[number]
 const OWNER_ACTIONS: readonly Action[] = ACTIONS
 
 const MANAGER_ACTIONS: readonly Action[] = [
+  'member:invite',
   'campaign:manage',
   'knowledge:manage',
   'lead:write',

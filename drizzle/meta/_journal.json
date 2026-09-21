@@ -92,6 +92,13 @@
       "when": 1789538330648,
       "tag": "0012_memberships_owner_only_writes",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789538331648,
+      "tag": "0013_managers_may_invite",
+      "breakpoints": true
     }
   ]
 }
