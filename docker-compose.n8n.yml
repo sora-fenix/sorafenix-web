@@ -43,10 +43,15 @@ services:
       NODE_FUNCTION_ALLOW_BUILTIN: crypto
 
       SORA_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:?set N8N_WEBHOOK_SECRET in .env.local}
-      SORA_CAMPAIGN_ID: ${SORA_CAMPAIGN_ID:?run `pnpm campaign:create` and put the id in .env.local}
+      # SORA_CAMPAIGN_ID is deliberately gone (ADR 0001). n8n no longer holds any
+      # tenant identity: the plan endpoint returns a campaign_id on every item, so
+      # onboarding a client is a workspace, a campaign and a target -- never an
+      # edit here or in the workflow. One workflow serves every tenant.
       # `pnpm dev` runs on the host, not in this network. No tunnel is involved:
       # cloudflared was only ever needed because n8n Cloud sits outside the machine.
       SORA_WEBHOOK_URL: http://host.docker.internal:3000/api/webhooks/n8n/leads
+      # Asked once per run, before the sweep, and it decides the whole sweep.
+      SORA_PLAN_URL: http://host.docker.internal:3000/api/webhooks/n8n/plan
 
       N8N_DIAGNOSTICS_ENABLED: 'false'
       N8N_VERSION_NOTIFICATIONS_ENABLED: 'false'

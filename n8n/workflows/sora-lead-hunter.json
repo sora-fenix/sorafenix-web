@@ -1,5 +1,6 @@
 {
   "name": "SORA — Lead Hunter",
+  "active": false,
   "nodes": [
     {
       "parameters": {},
@@ -7,7 +8,7 @@
       "typeVersion": 1,
       "position": [
         480,
-        432
+        320
       ],
       "id": "a1000000-0000-4000-8000-000000000001",
       "name": "When clicking 'Execute workflow'"
@@ -17,34 +18,58 @@
         "assignments": {
           "assignments": [
             {
-              "id": "f1",
-              "name": "keyword",
-              "value": "={{ $json.keyword }}",
+              "id": "p1",
+              "name": "campaign_id",
+              "value": "={{ $json.campaign_id }}",
               "type": "string"
             },
             {
-              "id": "f2",
-              "name": "lokasi",
-              "value": "={{ $json.lokasi }}",
+              "id": "p2",
+              "name": "idempotency_key",
+              "value": "={{ $json.idempotency_key }}",
               "type": "string"
             },
             {
-              "id": "f3",
-              "name": "jumlah",
-              "value": "={{ $json.jumlah }}",
+              "id": "p3",
+              "name": "q",
+              "value": "={{ $json.q }}",
+              "type": "string"
+            },
+            {
+              "id": "p4",
+              "name": "gl",
+              "value": "={{ $json.gl }}",
+              "type": "string"
+            },
+            {
+              "id": "p5",
+              "name": "hl",
+              "value": "={{ $json.hl }}",
+              "type": "string"
+            },
+            {
+              "id": "p6",
+              "name": "num",
+              "value": "={{ $json.num }}",
               "type": "number"
             },
             {
-              "id": "f4",
-              "name": "negara",
-              "value": "={{ $json.negara }}",
-              "type": "string"
-            },
-            {
-              "id": "f5",
+              "id": "p7",
               "name": "page",
               "value": "={{ $json.page }}",
               "type": "number"
+            },
+            {
+              "id": "p8",
+              "name": "space_index",
+              "value": "={{ $json.space_index }}",
+              "type": "number"
+            },
+            {
+              "id": "p9",
+              "name": "plan_date",
+              "value": "={{ $json.plan_date }}",
+              "type": "string"
             }
           ]
         },
@@ -54,10 +79,11 @@
       "typeVersion": 3.4,
       "position": [
         1152,
-        560
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000002",
-      "name": "Set Search Params"
+      "name": "Set Search Params",
+      "notes": "Carries one plan item forward. SORA composed `q` already; nothing here concatenates a keyword and a city any more."
     },
     {
       "parameters": {
@@ -67,7 +93,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ q: $json.keyword + ' ' + $json.lokasi, gl: $json.negara, hl: 'id', num: $json.jumlah, page: $json.page }) }}",
+        "jsonBody": "={{ JSON.stringify({ q: $json.q, gl: $json.gl, hl: $json.hl, num: $json.num, page: $json.page }) }}",
         "options": {
           "timeout": 20000
         }
@@ -76,7 +102,7 @@
       "typeVersion": 4.2,
       "position": [
         1376,
-        560
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000003",
       "name": "Serper Places",
@@ -85,7 +111,13 @@
           "id": "GANTI_DENGAN_CREDENTIAL_ANDA",
           "name": "Serper API Key"
         }
-      }
+      },
+      "notes": "`q` arrives fully composed from SORA. `num` is capped at 10 server-side: asking for 11-100 costs 2 Serper credits and returns the same 10.\n\nRetries 3x and then continues: a timeout here used to end the whole sweep (measured 2026-09-23, 1 of 17 searches ran). One failed search must cost itself, not the rest of the day.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
     },
     {
       "parameters": {
@@ -96,12 +128,12 @@
       "typeVersion": 1,
       "position": [
         1600,
-        560
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000004",
       "name": "Split Out Places",
-      "onError": "continueRegularOutput",
-      "alwaysOutputData": true
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -111,7 +143,7 @@
       "typeVersion": 2,
       "position": [
         1824,
-        560
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000005",
       "name": "Normalize Place"
@@ -133,41 +165,39 @@
           ]
         },
         "options": {
-          "response": {
-            "response": {
-              "responseFormat": "text",
-              "outputPropertyName": "data",
-              "neverError": true
-            }
-          },
-          "redirect": {
-            "redirect": {
-              "followRedirects": true,
-              "maxRedirects": 5
-            }
-          },
           "batching": {
             "batch": {
               "batchSize": 5,
               "batchInterval": 1200
             }
           },
-          "timeout": 10000,
-          "allowUnauthorizedCerts": true
+          "allowUnauthorizedCerts": true,
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 10000
         }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         2048,
-        560
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000006",
       "name": "Fetch Website",
-      "onError": "continueRegularOutput",
       "alwaysOutputData": true,
       "retryOnFail": false,
       "disabled": true,
+      "onError": "continueRegularOutput",
       "notes": "Dimatikan untuk sapuan volume. Aktifkan lagi saat berburu email — Extract Contacts menangani kedua mode."
     },
     {
@@ -187,41 +217,39 @@
           ]
         },
         "options": {
-          "response": {
-            "response": {
-              "responseFormat": "text",
-              "outputPropertyName": "data",
-              "neverError": true
-            }
-          },
-          "redirect": {
-            "redirect": {
-              "followRedirects": true,
-              "maxRedirects": 5
-            }
-          },
           "batching": {
             "batch": {
               "batchSize": 5,
               "batchInterval": 1200
             }
           },
-          "timeout": 10000,
-          "allowUnauthorizedCerts": true
+          "allowUnauthorizedCerts": true,
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 10000
         }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         2272,
-        560
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000007",
       "name": "Fetch Contact Page",
-      "onError": "continueRegularOutput",
       "alwaysOutputData": true,
       "retryOnFail": false,
       "disabled": true,
+      "onError": "continueRegularOutput",
       "notes": "Dimatikan untuk sapuan volume. Aktifkan lagi saat berburu email — Extract Contacts menangani kedua mode."
     },
     {
@@ -232,7 +260,7 @@
       "typeVersion": 2,
       "position": [
         2496,
-        560
+        432
       ],
       "id": "a1000000-0000-4000-8000-000000000008",
       "name": "Extract Contacts",
@@ -248,7 +276,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        1400,
+        1408,
         0
       ],
       "id": "b1000000-0000-4000-8000-000000000001",
@@ -264,7 +292,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        2040,
+        2048,
         0
       ],
       "id": "b1000000-0000-4000-8000-000000000002",
@@ -280,7 +308,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        2680,
+        2688,
         0
       ],
       "id": "b1000000-0000-4000-8000-000000000003",
@@ -296,7 +324,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        3320,
+        3328,
         0
       ],
       "id": "b1000000-0000-4000-8000-000000000004",
@@ -312,7 +340,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        3960,
+        3968,
         0
       ],
       "id": "b1000000-0000-4000-8000-000000000005",
@@ -327,12 +355,6 @@
               "name": "webhook_secret",
               "value": "={{ $env.SORA_WEBHOOK_SECRET }}",
               "type": "string"
-            },
-            {
-              "id": "sora-campaign",
-              "name": "campaign_id",
-              "value": "={{ $env.SORA_CAMPAIGN_ID }}",
-              "type": "string"
             }
           ]
         },
@@ -343,7 +365,7 @@
       "typeVersion": 3.4,
       "position": [
         2720,
-        560
+        432
       ],
       "id": "sora-config-0001",
       "name": "SORA Config",
@@ -351,14 +373,13 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// ── Build SORA Payload ───────────────────────────────────────────────────────\n// Maps the sheet-shaped output of Extract Contacts onto the API contract in\n// docs/SPEC.md §2, then signs it.\n//\n// Sheet headers (\"Nama Bisnis\") are a presentation format. The API speaks one\n// canonical shape so that n8n, CSV upload and anything added later all land in\n// the same pipeline.\n//\n// THIS NODE MUST ALWAYS RETURN EXACTLY ONE ITEM. `Send to SORA` loops back into\n// `Loop Over Searches`, so a node that returns nothing ends the sweep: the loop\n// is never told to fetch the next search. A search that found nothing is normal\n// — Serper answers `places: []` for plenty of queries — and it must cost that\n// one search, not the 239 behind it. So an empty batch is still posted, and SORA\n// answers `accepted: 0`.\n\n// Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto, which docker-compose.n8n.yml sets.\nconst crypto = require('crypto');\n\nconst config = $('SORA Config').first().json;\nconst SECRET = config.webhook_secret;\nconst CAMPAIGN_ID = config.campaign_id;\n\nif (!SECRET) throw new Error('SORA Config: webhook_secret is empty — is SORA_WEBHOOK_SECRET set on the container?');\nif (!CAMPAIGN_ID) throw new Error('SORA Config: campaign_id is empty — run `pnpm campaign:create` and set SORA_CAMPAIGN_ID');\n\n// `SORA Config` is a Set node with includeOtherFields, so it stamps its own\n// assignments onto EVERY item that passes through it -- and this node used to\n// copy the whole item into `raw`. That is how the live HMAC secret ended up in\n// plaintext on 1208 company rows and 669 webhook_events payloads.\n//\n// The config is read from the node directly (above), never from the item, so\n// nothing here needs these keys. Add a name to this list whenever you add an\n// assignment to SORA Config.\nconst CONFIG_KEYS = ['webhook_secret'];\n\nfunction withoutConfig(item) {\n  const copy = Object.assign({}, item);\n  for (const key of CONFIG_KEYS) delete copy[key];\n  return copy;\n}\n\nfunction clean(value) {\n  const s = String(value ?? '').trim();\n  return s === '' ? null : s;\n}\n\n// Serper leaves rating and ratingCount empty for a place nobody has reviewed,\n// and Normalize Place passes '' straight through. '' is not 0 -- 0 would claim\n// we measured a rating of zero -- so anything unparseable becomes null and\n// src/lib/scoring/signals.ts scores that factor neutral.\nfunction num(value) {\n  if (value === null || value === undefined || value === '') return null;\n  const n = Number(value);\n  return Number.isFinite(n) ? n : null;\n}\n\nconst items = $input.all()\n  .map((item) => {\n    const j = item.json || {};\n\n    // Google Maps provenance, so \"where did this lead come from\" stays answerable.\n    const cid = clean(j.maps_cid);\n    const sourceUrl = cid ? `https://www.google.com/maps?cid=${cid}` : clean(j.Website);\n\n    return {\n      company_name: String(j['Nama Bisnis'] ?? '').trim(),\n      category: clean(j['Kategori']),\n      address: clean(j['Alamat']),\n      city: clean(j['Kota']),\n      website: clean(j['Website']),\n      email: clean(j['Email']),\n      phone: clean(j['No. Telepon']),\n      whatsapp: clean(j['WhatsApp']),\n      // The two strongest inputs to lead classification. They have always ridden\n      // along inside `raw`, keyed by an Indonesian sheet header; sending them as\n      // contract fields is what lets them land in real columns instead of needing\n      // a backfill after every sweep.\n      rating: num(j['Rating']),\n      review_count: num(j['Jumlah Review']),\n      source_url: sourceUrl,\n      // Everything else rides along for debugging and re-processing -- minus\n      // whatever SORA Config stamped on, which is credentials, not lead data.\n      raw: withoutConfig(j),\n    };\n  })\n  // `Extract Contacts` runs with alwaysOutputData, so a search that found nothing\n  // arrives here as one empty placeholder item. Drop it rather than posting a\n  // nameless company SORA would only reject.\n  .filter((item) => item.company_name !== '');\n\n// One key per run, computed once. A retry of THIS run must reuse it — that is\n// what makes a redelivery insert nothing. A new search gets a new key.\nconst params = $('Set Search Params').first().json;\nconst stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);\nconst slug = `${params.keyword}-${params.lokasi}-p${params.page ?? 1}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');\nconst idempotencyKey = `run_${slug}_${stamp}`;\n\nconst payload = {\n  campaign_id: CAMPAIGN_ID,\n  source: 'serper_places',\n  idempotency_key: idempotencyKey,\n  items,\n};\n\n// Sign the string that will actually be sent, and send this exact string.\nconst body = JSON.stringify(payload);\nconst signature =\n  'sha256=' + crypto.createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');\n\nreturn [{ json: { body, signature, item_count: items.length, idempotency_key: idempotencyKey } }];\n"
+        "jsCode": "// ── Build SORA Payload ───────────────────────────────────────────────────────\n// Maps the sheet-shaped output of Extract Contacts onto the API contract in\n// docs/SPEC.md §2, then signs it.\n//\n// Sheet headers (\"Nama Bisnis\") are a presentation format. The API speaks one\n// canonical shape so that n8n, CSV upload and anything added later all land in\n// the same pipeline.\n//\n// THIS NODE MUST ALWAYS RETURN EXACTLY ONE ITEM. `Send to SORA` loops back into\n// `Loop Over Searches`, so a node that returns nothing ends the sweep: the loop\n// is never told to fetch the next search. A search that found nothing is normal\n// — Serper answers `places: []` for plenty of queries — and it must cost that\n// one search, not the 239 behind it. So an empty batch is still posted, and SORA\n// answers `accepted: 0`.\n\n// Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto, which docker-compose.n8n.yml sets.\nconst crypto = require('crypto');\n\nconst config = $('SORA Config').first().json;\nconst SECRET = config.webhook_secret;\n\n// The campaign is whatever the PLAN said this search was for. n8n holds no\n// tenant identity any more: one workflow serves every tenant because every\n// plan item names its own campaign.\nconst plan = $('Set Search Params').first().json;\nconst CAMPAIGN_ID = plan.campaign_id;\n\nif (!SECRET) throw new Error('SORA Config: webhook_secret is empty — is SORA_WEBHOOK_SECRET set on the container?');\nif (!CAMPAIGN_ID) throw new Error('Plan item carried no campaign_id -- did the plan endpoint contract change?');\n\nfunction clean(value) {\n  const s = String(value ?? '').trim();\n  return s === '' ? null : s;\n}\n\nconst items = $input.all()\n  .map((item) => {\n    const j = item.json || {};\n\n    // Google Maps provenance, so \"where did this lead come from\" stays answerable.\n    const cid = clean(j.maps_cid);\n    const sourceUrl = cid ? `https://www.google.com/maps?cid=${cid}` : clean(j.Website);\n\n    return {\n      company_name: String(j['Nama Bisnis'] ?? '').trim(),\n      category: clean(j['Kategori']),\n      address: clean(j['Alamat']),\n      city: clean(j['Kota']),\n      website: clean(j['Website']),\n      email: clean(j['Email']),\n      phone: clean(j['No. Telepon']),\n      whatsapp: clean(j['WhatsApp']),\n      source_url: sourceUrl,\n      // Everything else rides along untouched, for debugging and re-processing.\n      raw: j,\n    };\n  })\n  // `Extract Contacts` runs with alwaysOutputData, so a search that found nothing\n  // arrives here as one empty placeholder item. Drop it rather than posting a\n  // nameless company SORA would only reject.\n  .filter((item) => item.company_name !== '');\n\n// The key comes from the PLAN, not from a timestamp here. SORA derives it\n// deterministically per (campaign, date, space index), so re-executing a sweep\n// on the same day re-posts the same key and dedupe collapses it, instead of\n// counting the same search twice.\nconst idempotencyKey = plan.idempotency_key;\nif (!idempotencyKey) throw new Error('Plan item carried no idempotency_key -- did the plan endpoint contract change?');\n\nconst payload = {\n  campaign_id: CAMPAIGN_ID,\n  source: 'serper_places',\n  idempotency_key: idempotencyKey,\n  // Additive, and the ingest route treats it as optional (ADR 0001 section 5):\n  // which window of the campaign's space these results came from. CSV and\n  // manual uploads omit it entirely.\n  plan: { plan_date: plan.plan_date, space_index: plan.space_index },\n  items,\n};\n\n// Sign the string that will actually be sent, and send this exact string.\nconst body = JSON.stringify(payload);\nconst signature =\n  'sha256=' + crypto.createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');\n\nreturn [{ json: { body, signature, item_count: items.length, idempotency_key: idempotencyKey } }];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         2944,
-        560
+        432
       ],
       "id": "sora-payload-0001",
       "name": "Build SORA Payload"
@@ -388,7 +409,7 @@
       "typeVersion": 4.2,
       "position": [
         3168,
-        560
+        512
       ],
       "id": "sora-send-0001",
       "name": "Send to SORA",
@@ -408,7 +429,7 @@
       "typeVersion": 1.2,
       "position": [
         480,
-        600
+        512
       ],
       "id": "sora-schedule-0001",
       "name": "Every morning at 08:00",
@@ -416,21 +437,6 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// ── Search Plan ──────────────────────────────────────────────────────────────\n// The only place you edit for a bigger sweep. One Execute runs ONE DAY'S SLICE\n// of the space below, one search at a time, each landing in SORA separately.\n//\n// Why a slice and not the whole space every day: a week of scraping is a\n// measurement. Re-running every combination daily spends Serper credits to\n// rediscover rows that dedupe merges anyway. Combination i belongs to slice\n// i % SLICES, so a day gets a MIX of keywords and cities rather than one city,\n// and the whole space is covered evenly as the week goes on.\n//\n// MEASURED: Serper /places returns **10** results per request, not 20. Four\n// stored executions (2026-09-01 to 2026-09-06) and then 25 more on 2026-09-07\n// each returned at most 10 while `num` asked for 20, and Extract Contacts\n// dropped none of them — so the shortfall is Serper, not our contact filter.\n//\n// PAGES is therefore the ONLY lever that gets a city past 10 results:\n// [1, 2, 3, 4, 5] gives up to 50.\n//\n// ALSO MEASURED: a query can come back empty for no reason and answer normally\n// minutes later, so roughly one search in eight yields nothing. That is why\n// Extract Contacts runs with alwaysOutputData and Build SORA Payload always\n// returns one item — a nil search must cost one search, not the rest of the day.\n\nconst KEYWORDS = [\n  'pet shop',\n  'petshop',\n  'toko hewan peliharaan',\n  'toko pakan hewan',\n  'grooming hewan',\n  'pet grooming',\n  'klinik hewan',\n  'dokter hewan',\n  'toko kucing',\n  'toko anjing',\n  'aksesoris hewan peliharaan',\n  'penitipan hewan',\n];\n\n// Surabaya raya. The kecamatan-level entries are here because Google biases\n// /places by the text of the query: 'pet shop Rungkut Surabaya' surfaces shops\n// that 'pet shop Surabaya' never reaches, page 5 included.\n//\n// PROBED 2026-09-07, one search each: 22 of these 25 returned 10 results,\n// Kenjeran returned 5, and Gubeng / Waru / Manyar returned none. The three\n// empties are NOT bad location strings — 'Surabaya Pusat' returned nothing an\n// hour earlier and 10 on the probe, so Serper answers empty intermittently for\n// any query. They stay in the list; the sweep survives an empty now.\nconst KOTA = [\n  'Surabaya',\n  'Surabaya Pusat',\n  'Surabaya Barat',\n  'Surabaya Timur',\n  'Surabaya Selatan',\n  'Surabaya Utara',\n  'Rungkut Surabaya',\n  'Gubeng Surabaya',\n  'Wiyung Surabaya',\n  'Lakarsantri Surabaya',\n  'Mulyorejo Surabaya',\n  'Tandes Surabaya',\n  'Kenjeran Surabaya',\n  'Wonokromo Surabaya',\n  'Sukolilo Surabaya',\n  'Sidoarjo',\n  'Waru Sidoarjo',\n  'Taman Sidoarjo',\n  'Krian Sidoarjo',\n  'Gresik',\n  'Manyar Gresik',\n  'Mojokerto',\n  'Malang',\n  'Malang Kota',\n  'Batu',\n];\n\nconst PAGES = [1, 2, 3, 4, 5];\n\n// 10, not 20. Serper bills ONE credit for a request asking up to 10 results and\n// TWO for 11-100, so `20` doubled the price of every search in the sweep -- and\n// bought nothing, because the measurement above is that Serper returns at most\n// 10 regardless of what `num` asks. PAGES is the only lever past 10 for a city.\nconst JUMLAH = 10;\nconst NEGARA = 'id';\n\n// 6, not 7, on purpose: day 7 lands back on slice 0. Re-covering the ground the\n// week opened with is what measures how fast new businesses actually appear.\nconst SLICES = 6;\n\n// The first day of the sweep. Fixed, so \"which slice runs today\" is reproducible\n// and does not drift with the container's uptime. Move it if the week slips.\nconst START_DATE = '2026-09-07';\n\n// Hard ceiling on Serper credits per Execute. The free tier is ~2500 ONCE for\n// the life of the account -- it does not refill weekly or monthly; a widened\n// KEYWORDS list that quietly doubles the plan would spend it in two days, and\n// the failure would look like \"Serper stopped working\".\nconst MAX_SEARCHES_PER_DAY = 260;\n\n// Days since epoch in the container's own timezone (Asia/Jakarta, set by\n// docker-compose.n8n.yml). Not UTC — that would roll the slice over at 07:00\n// local, in the middle of the scheduled run.\nfunction localDayNumber(date) {\n  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);\n  return Math.floor(shifted.getTime() / 86400000);\n}\n\nconst dayIndex = localDayNumber(new Date()) - localDayNumber(new Date(START_DATE + 'T00:00:00'));\nconst slice = ((dayIndex % SLICES) + SLICES) % SLICES; // negative-safe: a run before START_DATE still picks a valid slice\n\nconst all = [];\nfor (const keyword of KEYWORDS) {\n  for (const lokasi of KOTA) {\n    for (const page of PAGES) {\n      all.push({ keyword, lokasi, page, jumlah: JUMLAH, negara: NEGARA });\n    }\n  }\n}\n\nif (all.length === 0) throw new Error('Search Plan is empty — fill KEYWORDS and KOTA');\n\nconst chosen = all.filter(function (_, i) { return i % SLICES === slice; });\n\nif (chosen.length > MAX_SEARCHES_PER_DAY) {\n  console.log(\n    'Search Plan: slice ' + slice + ' has ' + chosen.length + ' searches, capped at ' +\n    MAX_SEARCHES_PER_DAY + '. Shrink KEYWORDS/KOTA/PAGES or raise the cap deliberately.'\n  );\n}\n\nreturn chosen.slice(0, MAX_SEARCHES_PER_DAY).map(function (params) {\n  return {\n    json: Object.assign({}, params, {\n      slice: slice,\n      day_index: dayIndex,\n      plan_size: all.length,\n    }),\n  };\n});\n"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        704,
-        432
-      ],
-      "id": "sora-plan-0001",
-      "name": "Search Plan"
-    },
-    {
-      "parameters": {
-        "batchSize": 1,
         "options": {}
       },
       "type": "n8n-nodes-base.splitInBatches",
@@ -445,7 +451,6 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
         "jsCode": "// ── Run Summary ──────────────────────────────────────────────────────────────\n// The loop's \"done\" output carries what every iteration returned — one response\n// from SORA per search. Totals here, details in the individual Send to SORA runs.\n\nlet accepted = 0, inserted = 0, duplicates = 0, rejected = 0, replayed = 0;\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  accepted   += j.accepted   || 0;\n  inserted   += j.inserted   || 0;\n  duplicates += j.duplicates || 0;\n  rejected   += Array.isArray(j.rejected) ? j.rejected.length : 0;\n  if (j.replayed) replayed += 1;\n}\n\nreturn [{ json: { searches: $input.all().length, accepted, inserted, duplicates, rejected, replayed } }];\n"
       },
       "type": "n8n-nodes-base.code",
@@ -472,6 +477,89 @@
       ],
       "id": "sora-sticky-batch",
       "name": "Note: 0. SCRAPING SERIUS — mulai di sini"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "plan-secret",
+              "name": "webhook_secret",
+              "value": "={{ $env.SORA_WEBHOOK_SECRET }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        208,
+        432
+      ],
+      "id": "sora-planconfig-01",
+      "name": "Plan Config",
+      "notes": "A Set node, not a Code node: n8n Cloud blocks $env inside Code nodes. Set expressions are evaluated by the main process and work everywhere."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Plan Request\n// Asks SORA what to sweep today. Replaces the old `Search Plan`, which derived\n// the day's slice from the CALENDAR (START_DATE + dayIndex % SLICES) over keyword\n// and city literals living here. That was single-tenant by construction: every\n// tenant's space is a different size and starts on a different date.\n//\n// The decision now lives in SORA (ADR 0001) and n8n holds no tenant identity at\n// all -- no SORA_CAMPAIGN_ID, no keyword list, no slice arithmetic. Onboarding a\n// client is a workspace, a campaign and a target. One workflow, every tenant.\n\nconst crypto = require('crypto');\n\n// Read from the Set node, never $env directly: n8n Cloud blocks $env inside Code\n// nodes (N8N_BLOCK_ENV_ACCESS_IN_NODE defaults true there, with no override), so\n// a Code node would sign with undefined and fail as a 401 that looks exactly like\n// a wrong secret. Set node expressions are evaluated by the main process.\nconst SECRET = $('Plan Config').first().json.webhook_secret;\nif (!SECRET) throw new Error('Plan Config: webhook_secret is empty -- is SORA_WEBHOOK_SECRET set on the container?');\n\n// The container runs Asia/Jakarta (docker-compose.n8n.yml). Take the LOCAL\n// calendar day, not UTC: the 08:00 trigger would otherwise roll the plan date\n// over at 07:00 local, in the middle of the scheduled run.\nconst now = new Date();\nconst planDate = new Date(now.getTime() - now.getTimezoneOffset() * 60000)\n  .toISOString()\n  .slice(0, 10);\n\n// The key IS the day, deliberately. Re-executing this workflow on the same date\n// is then a genuine replay: SORA returns the same decision, advances no cursor\n// and spends no Serper credit, rather than issuing a second window over ground\n// the first run already paid for.\nconst idempotencyKey = 'plan_' + planDate;\n\n// What this executor will accept today. `Loop Over Searches` is strictly\n// sequential at ~2-3s per search, so this is a throughput ceiling, not a budget:\n// SORA takes min(this, its own daily budget). 260 is the same ceiling the old\n// MAX_SEARCHES_PER_DAY enforced, carried across rather than quietly raised.\nconst payload = {\n  idempotency_key: idempotencyKey,\n  plan_date: planDate,\n  max_items: 260,\n  dry_run: false,\n};\n\n// Sign the string that will actually be sent, and send this exact string. The\n// signature covers exact bytes: if the HTTP node re-serialised the object, key\n// order and escaping would differ and the signature would never match.\nconst body = JSON.stringify(payload);\nconst signature =\n  'sha256=' + crypto.createHmac('sha256', SECRET).update(body, 'utf8').digest('hex');\n\nreturn [{ json: { body, signature, plan_date: planDate, idempotency_key: idempotencyKey } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        432
+      ],
+      "id": "sora-buildplan-01",
+      "name": "Build Plan Request"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SORA_PLAN_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-sora-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        576,
+        432
+      ],
+      "id": "sora-getplan-01",
+      "name": "Get Plan",
+      "notes": "Body Content Type MUST stay Raw. JSON re-serialises the object and the signature stops matching."
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "items",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        752,
+        432
+      ],
+      "id": "sora-splitplan-01",
+      "name": "Split Out Plan Items",
+      "notes": "An empty plan is normal and must not be an error: a tenant out of budget, already planned today, or with no valid target contributes nothing and appears in the response's `skipped` list."
     }
   ],
   "connections": {
@@ -479,7 +567,7 @@
       "main": [
         [
           {
-            "node": "Search Plan",
+            "node": "Plan Config",
             "type": "main",
             "index": 0
           }
@@ -589,18 +677,7 @@
       "main": [
         [
           {
-            "node": "Search Plan",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Search Plan": {
-      "main": [
-        [
-          {
-            "node": "Loop Over Searches",
+            "node": "Plan Config",
             "type": "main",
             "index": 0
           }
@@ -635,12 +712,56 @@
           }
         ]
       ]
+    },
+    "Plan Config": {
+      "main": [
+        [
+          {
+            "node": "Build Plan Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Plan Request": {
+      "main": [
+        [
+          {
+            "node": "Get Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Plan": {
+      "main": [
+        [
+          {
+            "node": "Split Out Plan Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out Plan Items": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Searches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "pinData": {},
-  "active": false,
   "settings": {
     "executionOrder": "v1",
-    "saveManualExecutions": true
-  }
+    "saveManualExecutions": true,
+    "binaryMode": "separate"
+  },
+  "pinData": {}
 }

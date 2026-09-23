@@ -1931,6 +1931,77 @@ The throwaway database was dropped afterwards and the real one re-checked: 1208
 
 ---
 
+## n8n is tenant-blind, and the loop ran for real (2026-09-23)
+
+The last piece of ADR 0001's execution half. `Search Plan` — 12 keyword literals,
+25 city literals, and a day index counted from a fixed `START_DATE` — is deleted.
+In its place:
+
+```
+Plan Config (Set)  ->  Build Plan Request (Code, signs)  ->  Get Plan (HTTP)
+  ->  Split Out Plan Items  ->  Loop Over Searches   (unchanged from here down)
+```
+
+`SORA_CAMPAIGN_ID` is gone from `docker-compose.n8n.yml`. **n8n now holds no
+tenant identity of any kind.** Onboarding a client is a workspace, a campaign and
+a `campaigns.target` row — no workflow edit, ever.
+
+Applied through the documented export-patch-import against the live container,
+never by importing the repo copy, which carries a placeholder credential id on
+purpose. Verified after import: same workflow id, 24 nodes, Serper credential
+still bound, and the committed copy re-synced from the live one with the
+credential reset to the placeholder (checked: no credential id, no webhook
+secret, no campaign id in the committed JSON).
+
+### It was run, and here is what the run proved
+
+| | before | after |
+|---|---|---|
+| `webhook_events` (`n8n_plan`) | 0 | **1** — the endpoint was called for real |
+| `scrape_cursors.position` | 0 | **17** — exactly the maintenance window |
+| `last_planned_on` | null | **2026-09-23** |
+| `webhook_events` (`n8n`) | 854 | **855** — results came back through ingest |
+| leads | 1208 | 1208 |
+
+**Zero new leads is the correct result, not a failure.** The space was already
+fully swept, so everything found was a duplicate that dedupe merged — which
+confirms from the ingest side the saturation `pnpm leads:stats` had only ever
+inferred. `item_count = 17` is `ceil(1500 / 90)`, so the `maintenance` tier patch
+in `0017` is doing its job; at `burst` this would have been 260.
+
+The plan response also showed the stride permutation working as designed: space
+indexes 0, 1, 2 produced *"aksesoris hewan peliharaan Batu"*, *"aksesoris hewan
+peliharaan Surabaya Utara"*, *"dokter hewan Sukolilo Surabaya"* — a mix of
+keywords and cities, not a lexicographic run.
+
+### And it found the gap that was flagged on day one
+
+Only **1 of the 17** searches ran. Serper returned `ECONNABORTED` on the second
+loop iteration and the whole sweep stopped, because `Serper Places` had no
+`onError` and no `retryOnFail` — the exact hazard raised at the very start of
+this work and never closed. `Fetch Website` and `Fetch Contact Page` have carried
+the treatment all along. Now `Serper Places` does too: three tries 3s apart, then
+`continueRegularOutput` so a failed search flows down the same path as a search
+that legitimately found nothing, and the loop still advances.
+
+Note this cost nothing extra but was not free either: the cursor advances on
+**issue**, not on execution, so 17 were charged against the space and ~1 ran.
+That is the consequence ADR 0001 records, now observed rather than predicted.
+
+### The replay path, tested because it is cheap to test
+
+The plan request's idempotency key is the date (`plan_<YYYY-MM-DD>`), so a
+same-day re-execute is a genuine replay. A second Execute finished `success` with
+an empty plan and **nothing moved**: position still 17, no new `webhook_events`,
+no second claim, no Serper credit. It also proves the workflow handles an empty
+plan without erroring, which is the normal case for a tenant already planned,
+out of budget, or without a valid target.
+
+Gates: `typecheck` clean, `lint` clean, `test` 496 in 14 files,
+`test:integration` 178 in 11 files.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →

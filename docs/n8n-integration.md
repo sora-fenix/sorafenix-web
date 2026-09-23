@@ -16,7 +16,7 @@ the first copy of this workflow existed only inside one laptop's Docker volume
 and died with the laptop.
 
 ```
-pnpm campaign:create      # once — prints the SORA_CAMPAIGN_ID for .env.local
+pnpm campaign:create      # once per client, and its id never leaves the database
 pnpm n8n:start            # http://localhost:5678
 pnpm n8n:logs
 pnpm n8n:stop
@@ -44,8 +44,11 @@ pnpm workspace:create "Data Riil" --members-from maju-bersama
 pnpm campaign:create --workspace data-riil
 ```
 
-Put the printed id in `SORA_CAMPAIGN_ID` and restart with `pnpm n8n:start`. The
-seed only ever deletes the workspace it created, so everything here survives it.
+The printed id does **not** go into the environment any more. Since ADR 0001 the
+plan endpoint tells n8n which campaign every search belongs to, so
+`SORA_CAMPAIGN_ID` no longer exists in `docker-compose.n8n.yml` — give the
+campaign a `target` instead and it is swept. The seed only ever deletes the
+workspace it created, so everything here survives it.
 
 `--members-from` copies the membership rows, roles included: a workspace nobody
 belongs to cannot be opened in the UI, and RLS makes that first membership row
@@ -62,7 +65,7 @@ signs with the same `N8N_WEBHOOK_SECRET` the app verifies with. One value, one
 file. A second copy would drift, and a drifted secret is indistinguishable from
 a malformed request: 401 `invalid_signature`, forever.
 
-The container receives `SORA_WEBHOOK_SECRET`, `SORA_CAMPAIGN_ID` and
+The container receives `SORA_WEBHOOK_SECRET`, `SORA_PLAN_URL` and
 `SORA_WEBHOOK_URL`. Nothing sensitive is stored in the workflow JSON, which is
 what makes committing it safe.
 
@@ -73,7 +76,7 @@ Self-hosted n8n sets `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, so `$env` works —
 that is handed a filtered environment. Verified on 2.36.9:
 
 ```
-main process (pid 7)   SORA_WEBHOOK_SECRET, SORA_CAMPAIGN_ID, SORA_WEBHOOK_URL, N8N_BLOCK_ENV_ACCESS_IN_NODE
+main process (pid 7)   SORA_WEBHOOK_SECRET, SORA_WEBHOOK_URL, SORA_PLAN_URL, N8N_BLOCK_ENV_ACCESS_IN_NODE
 task runner (pid 19)   NODE_FUNCTION_ALLOW_BUILTIN=crypto, N8N_RUNNERS_* — and nothing else
 ```
 
@@ -101,31 +104,46 @@ outside the machine — see *Reaching a local machine from n8n Cloud* below.
 
 ## Scraping at volume
 
-One Execute sweeps **one day's slice** of a `keyword × city × page` space.
-Everything you edit lives in the `Search Plan` node:
+**There is nothing to edit here any more.** As of 2026-09-23 (ADR 0001) the
+`Search Plan` node is gone, and with it the `KEYWORDS`, `KOTA`, `SLICES` and
+`START_DATE` literals that made this workflow serve exactly one tenant. SORA
+decides; n8n executes.
 
-```js
-const KEYWORDS = ['pet shop', 'petshop', 'toko hewan peliharaan', /* … 12 total */];
-const KOTA     = ['Surabaya Pusat', 'Rungkut Surabaya', 'Sidoarjo', /* … 24 total */];
-const PAGES    = [1, 2, 3, 4, 5];
-
-const SLICES               = 6;            // day 7 repeats slice 0
-const START_DATE           = '2026-09-07'; // first day of the sweep
-const MAX_SEARCHES_PER_DAY = 260;          // hard ceiling on Serper credits
+```
+Plan Config (Set)        reads SORA_WEBHOOK_SECRET
+  -> Build Plan Request  signs { idempotency_key, plan_date, max_items }
+  -> Get Plan            POST $env.SORA_PLAN_URL
+  -> Split Out Plan Items
+  -> Loop Over Searches  one item at a time, exactly as before
 ```
 
-12 × 25 × 5 = **1500 combinations**, and combination *i* belongs to slice
-`i % 6`. So a day runs 250 searches that are a *mix* of keywords and cities, the
-whole space is covered in six days, and day 7 lands back on slice 0 — which is
-how you measure whether new businesses are still appearing in ground you already
-swept. Seven days costs **1750 Serper credits** at `JUMLAH = 10`; the free tier
-is ~2500 **once for the life of the account** — it does not refill — and an empty
-result is billed like any other.
+Each plan item arrives complete: `campaign_id`, a deterministic
+`idempotency_key`, a fully composed `q`, plus `gl`, `hl`, `num`, `page` and
+`space_index`. **n8n concatenates nothing and holds no tenant identity** —
+`SORA_CAMPAIGN_ID` is gone from `docker-compose.n8n.yml`. Onboarding a client is
+a workspace, a campaign and a `campaigns.target` row. One workflow, every tenant,
+forever.
 
-`Loop Over Searches` runs the slice one search at a time through the whole chain,
-so each search POSTs its own batch with its own `idempotency_key`
-(`run_{keyword}-{kota}-p{page}_{stamp}`), and one failure does not cost the
-others. `Run Summary` on the loop's *done* output totals what came back.
+What each tenant is swept for, and how much of it per day, now lives in
+`campaigns.target` and `scrape_cursors` — see ADR 0001 §2 and §3. `max_items` in
+`Build Plan Request` is this executor's throughput ceiling (260, carried across
+from the old `MAX_SEARCHES_PER_DAY`), not a budget: SORA takes
+min(that, its own daily budget).
+
+**The plan request's idempotency key is the date**, `plan_<YYYY-MM-DD>`. So
+re-executing the workflow on the same day is a genuine replay: SORA returns the
+same decision, advances no cursor, and spends no Serper credit. Verified
+2026-09-23 — a second Execute finished `success` with an empty plan, and
+`position`, `webhook_events` and the lead count were all unchanged.
+
+An empty plan is normal and is not an error: a tenant already planned today, out
+of budget, or holding no valid target contributes nothing and appears in the
+response's `skipped` list with a reason.
+
+`Loop Over Searches` runs the plan one search at a time through the whole chain,
+so each search POSTs its own batch under the key SORA issued for it, and one
+failure does not cost the others. `Run Summary` on the loop's *done* output
+totals what came back.
 
 **Serper `/places` returns 10 per request, not 20 — measured.** Four stored
 executions (2026-09-01 to 2026-09-06) each put exactly 10 items into
@@ -225,12 +243,13 @@ string verbatim as a raw body.
 
 Type: Set · Mode: Manual Mapping · **Include Other Input Fields: on**
 
-Two string fields:
+One string field since ADR 0001 — `campaign_id` was dropped, because every plan
+item now carries its own. `Plan Config` at the head of the workflow is the same
+pattern for the same reason: a Set node, never `$env` inside a Code node.
 
 | Name | Value (local Docker) | Value (n8n Cloud) |
 |---|---|---|
 | `webhook_secret` | `={{ $env.SORA_WEBHOOK_SECRET }}` | the literal `N8N_WEBHOOK_SECRET` from `.env.local` |
-| `campaign_id` | `={{ $env.SORA_CAMPAIGN_ID }}` | the literal campaign UUID |
 
 **The `$env` column only works self-hosted.** On n8n Cloud,
 `N8N_BLOCK_ENV_ACCESS_IN_NODE` defaults to `true` and there is no way to turn it
