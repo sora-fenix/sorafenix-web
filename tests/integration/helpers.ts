@@ -41,6 +41,7 @@ export const WORKSPACE_SCOPED_TABLES = [
   'memberships',
   'messages',
   'products',
+  'scrape_cursors',
   'sequence_runs',
   'suppressions',
   'webhook_events',
@@ -128,6 +129,17 @@ export async function createWorkspaceFixture(
             values (${workspaceId}, 'qualify', 'gemini-3.7-flash', true)`
   await sql`insert into webhook_events (workspace_id, provider, idempotency_key)
             values (${workspaceId}, 'n8n', ${`rls-${tag}-key`})`
+  // One cursor per workspace, so the read sweep is non-vacuous for a table whose
+  // grant is SELECT-only. Every column is written out, including the ones that
+  // have defaults, because the shape is the point of a fixture. The fingerprint
+  // is a real sha256 and differs per workspace, as lib/scraping/target.ts emits;
+  // `lap_started_on` is a fixed date, never now(), so counts stay deterministic.
+  await sql`insert into scrape_cursors
+              (workspace_id, campaign_id, space_fingerprint, space_size,
+               position, lap, lap_started_on, tier)
+            values (${workspaceId}, ${campaign.id},
+                    encode(sha256(convert_to(${`rls-${tag}`}, 'UTF8')), 'hex'),
+                    1500, 0, 0, '2026-09-07', 'burst')`
 
   return {
     workspaceId,

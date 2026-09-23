@@ -291,6 +291,91 @@ describe('privileged workspace columns', () => {
 })
 
 // -----------------------------------------------------------------------------
+// Machine state is readable, never writable
+// -----------------------------------------------------------------------------
+
+describe('scrape_cursors grants', () => {
+  // ADR 0001 §4: a cursor is written by the planner over the privileged
+  // connection and read by a coverage panel. Nobody edits one. So it is the only
+  // table in WORKSPACE_SCOPED_TABLES that deviates from the uniform
+  // `_member_all` grant in 0003 — SELECT to `authenticated`, and nothing else.
+  //
+  // Asserted with has_table_privilege for exactly the reason the 0011 cases
+  // above use has_column_privilege: Supabase's default ACL grants ALL on every
+  // new table to anon, authenticated and service_role, so a bare `GRANT SELECT`
+  // is a no-op that still reads like a fix. The REVOKE in 0015 is what makes it
+  // real, and this case is what fails if anyone drops it.
+
+  it('grants SELECT to a member and withholds every write', async () => {
+    const [row] = await reserved<
+      {
+        can_select: boolean
+        can_insert: boolean
+        can_update: boolean
+        can_delete: boolean
+        anon_select: boolean
+        anon_insert: boolean
+      }[]
+    >`
+      select has_table_privilege('authenticated', 'scrape_cursors', 'SELECT') as can_select,
+             has_table_privilege('authenticated', 'scrape_cursors', 'INSERT') as can_insert,
+             has_table_privilege('authenticated', 'scrape_cursors', 'UPDATE') as can_update,
+             has_table_privilege('authenticated', 'scrape_cursors', 'DELETE') as can_delete,
+             has_table_privilege('anon', 'scrape_cursors', 'SELECT') as anon_select,
+             has_table_privilege('anon', 'scrape_cursors', 'INSERT') as anon_insert`
+    expect(row?.can_select).toBe(true)
+    expect(row?.can_insert).toBe(false)
+    expect(row?.can_update).toBe(false)
+    expect(row?.can_delete).toBe(false)
+
+    // 0015 revokes `anon` as well, and its comment argues that line earns its
+    // keep. Without these two the line could be deleted and the suite would stay
+    // green. No policy admits anon, so RLS would still stop it — but a
+    // table-level grant left standing for an unauthenticated role means one
+    // forgotten policy is the whole breach.
+    expect(row?.anon_select).toBe(false)
+    expect(row?.anon_insert).toBe(false)
+  })
+
+  it('stops a member forging a cursor in their own workspace', async () => {
+    // The grant stated as the outcome that matters. Forging a fingerprint is the
+    // interesting attack: it makes a campaign re-walk ground it has already paid
+    // for, on the Serper account every tenant shares.
+    const message = await probeRejection(
+      reserved,
+      alpha.userId,
+      `insert into scrape_cursors
+         (workspace_id, campaign_id, space_fingerprint, space_size, lap_started_on)
+       values ($1, gen_random_uuid(), 'forged', 1, '2026-09-07')`,
+      [alpha.workspaceId],
+    )
+    expect(message).toMatch(/permission denied/i)
+  })
+
+  it('stops a member rewinding their own cursor', async () => {
+    const message = await probeRejection(
+      reserved,
+      alpha.userId,
+      `update scrape_cursors set position = 0, lap = 0 where workspace_id = $1`,
+      [alpha.workspaceId],
+    )
+    expect(message).toMatch(/permission denied/i)
+  })
+
+  it('still lets a member see their own coverage', async () => {
+    // The restriction must not blind the panel it exists to serve: without this,
+    // a table nobody could read at all would pass every case above.
+    const rows = await asUser(reserved, alpha.userId, () =>
+      reserved.unsafe(
+        `select position, lap, space_size from scrape_cursors where workspace_id = $1`,
+        [alpha.workspaceId],
+      ),
+    )
+    expect(rows.length).toBe(1)
+  })
+})
+
+// -----------------------------------------------------------------------------
 // Membership writes belong to the owner alone
 // -----------------------------------------------------------------------------
 

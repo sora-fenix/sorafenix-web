@@ -5,7 +5,7 @@
  * Dependency order is strict and acyclic:
  *
  *   workspace  ←  crm  ←  outreach
- *        ↖ ai
+ *        ↖ ai       ↖ scraping
  *
  * A domain file may only import from files to its left. If you find yourself
  * needing the other direction, the table is in the wrong file.
@@ -14,4 +14,5 @@
 export * from './workspace'
 export * from './crm'
 export * from './outreach'
+export * from './scraping'
 export * from './ai'
