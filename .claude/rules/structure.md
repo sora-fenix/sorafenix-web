@@ -23,6 +23,7 @@ src/
     api/
       health/                  # liveness check
       webhooks/n8n/leads/      # lead ingestion (HMAC signed)
+      webhooks/n8n/plan/       # the day's search plan (same HMAC secret)
       webhooks/gmail/          # push notifications
       webhooks/whatsapp/       # inbound + status callbacks
       cron/                    # queue tick, sequence tick
@@ -43,9 +44,11 @@ src/
     ai/        agent.ts models.ts prompts/ schemas/
     leads/     dedupe.ts enrich.ts
     scoring/   rubric.ts score.ts
+    scraping/  target.ts allocate.ts (pure) context.ts plan.ts (IO)
     outreach/  send-guard.ts email.ts whatsapp.ts
     sequences/ state-machine.ts runner.ts
     crm/       status.ts activity.ts
+    webhooks/  signature.ts
 
 drizzle/                       # migrations (0001_rls.sql is hand-written)
 scripts/       seed.ts seed-data.ts
