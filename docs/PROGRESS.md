@@ -1780,10 +1780,15 @@ its own cascade, and removing a non-owner never touches the trigger.
 
 Migrations 0011–0016 are applied **forward** on the local database. A
 from-scratch `pnpm db:reset` has never been run for them: it would destroy the
-real scraped `data-riil` leads, and CLAUDE.md forbids that without asking. So a
-clean apply of this chain is unverified. The risk is concentrated in `0016`,
-whose trigger is the only one of the six that changes behaviour on every write
-to `memberships` rather than only on grants.
+real scraped `data-riil` leads, and CLAUDE.md forbids that without asking.
+
+> **Closed 2026-09-23.** The clean apply was verified on a throwaway database
+> instead — see "The migration chain, verified from scratch" below. The real
+> database was never touched.
+
+The risk was concentrated in `0016`, whose trigger is the only one of the six
+that changes behaviour on every write to `memberships` rather than only on
+grants.
 
 Gates: `typecheck` clean, `lint` clean, `test` 466 in 13 files,
 `test:integration` 150 in 10 files.
@@ -1860,7 +1865,10 @@ key `workspace_id` off the candidate row.
 Migrations **0011–0017 are applied forward on the local database only**. A
 from-scratch `pnpm db:reset` has never been run for them, because it would
 destroy the real scraped `data-riil` leads and CLAUDE.md forbids that without
-asking. A clean apply of the chain is unverified.
+asking.
+
+> **Closed 2026-09-23** — the clean apply was verified on a throwaway database
+> instead. See the section below.
 
 `0017`'s predicate was tightened after review to `target->>'version' is null`: it
 fills a blank or replaces a pre-ADR target `parseTarget` rejects, and can never
@@ -1872,6 +1880,54 @@ agree only because the tightened version also matches that case.
 
 Gates: `typecheck` clean, `lint` clean, `test` 496 in 14 files,
 `test:integration` 178 in 11 files.
+
+---
+
+## The migration chain, verified from scratch (2026-09-23)
+
+The standing caveat across the last two sections was that migrations 0011–0017
+had only ever been applied **forward**, because `pnpm db:reset` would destroy the
+1208 real scraped `data-riil` leads. That is now closed, without running the
+reset.
+
+**Method.** A throwaway database (`sora_migtest`) in the same Postgres cluster,
+given a minimal stand-in for the three things the migrations reach for outside
+`public` — `auth.users(id)`, `auth.uid()`, and `pg_trgm`. Postgres roles are
+cluster-level, so `authenticated` and `anon` already existed. All eighteen
+migrations were then applied in journal order with `ON_ERROR_STOP=1`.
+
+**`pnpm db:migrate` was deliberately not used.** If a `DATABASE_URL` override had
+silently failed to take, it would have run against the real database — where
+every migration is already applied, so it would have been a harmless no-op that
+nonetheless reported a clean pass. A false green is worse than no test. The SQL
+files were fed to `psql` with the target database named explicitly instead.
+
+**Result: all 18 applied cleanly.** But running without error is the weak claim.
+The strong one is that a from-scratch apply produces the *same database* as the
+incrementally-built one. A 362-line snapshot of every table's RLS flags, every
+policy and its command, every INSERT/UPDATE/DELETE column grant to `authenticated`
+and `anon`, and every non-internal trigger was taken from both and compared:
+**identical, line for line.**
+
+The snapshot was checked for non-vacuity rather than trusted, because two empty
+result sets also compare equal — an earlier run of this comparison did exactly
+that, silently, when a missing `::text` cast made both queries error out and the
+diff reported success over two empty files. The working snapshot demonstrably
+contains `0011`'s UPDATE allowlist (`name`, `slug`, `timezone`, `updated_at` and
+nothing else), `0016`'s `memberships_keep_an_owner` trigger, `0015`'s
+`scrape_cursors` with zero write grants, and all four membership policies from
+`0012`/`0013`.
+
+**One observation, not a defect.** `authenticated` still holds INSERT on every
+column of `workspaces`. It is inert: the table has `select`, `update` and
+`delete` policies and **no INSERT policy at all**, so RLS denies every insert
+regardless of the grant — which is precisely what `provisionWorkspace` relies on
+and documents. `0011`'s scope was UPDATE. Narrowing INSERT would be defence in
+depth against a future migration that adds an INSERT policy without re-checking
+the grants.
+
+The throwaway database was dropped afterwards and the real one re-checked: 1208
+`data-riil` leads, 2 workspaces, cursor still at `maintenance`.
 
 ---
 
