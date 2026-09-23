@@ -22,6 +22,7 @@ export type ActivityActor = 'ai' | 'human' | 'system'
 export type ActivityType =
   | 'lead_created'
   | 'lead_scored'
+  | 'message_drafted'
   | 'status_changed'
   | 'owner_changed'
 

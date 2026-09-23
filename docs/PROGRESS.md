@@ -37,9 +37,9 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 496 tests, 14 files |
+| `pnpm test` | ✅ 528 tests, 15 files |
 | `pnpm build` | ✅ all 19 routes built |
-| `pnpm test:integration` | ✅ 178 tests, 11 files |
+| `pnpm test:integration` | ✅ 192 tests, 12 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -2002,6 +2002,116 @@ Gates: `typecheck` clean, `lint` clean, `test` 496 in 14 files,
 
 ---
 
+## Module 5 — the AI content generator (2026-09-23)
+
+`pnpm generate:content` drafts one outbound **email** per qualified lead, grounded
+only in stored data, and flags it `needs_input` instead of guessing.
+
+**Generation only.** No approve, no reject, no send — those are the next links in
+the loop. No WhatsApp either: SPEC §5 requires WhatsApp output to fit an approved
+Cloud API template, and there is no `templates` table anywhere in the data model,
+so supporting it now would mean inventing template storage. It waits for Module
+6/7, where the Cloud API integration is built anyway.
+
+**No schema change and no migration** — verified, `git status` on `drizzle/` and
+`src/lib/db/schema/` is empty. `messages` already had everything, `AgentName`
+already contained `'generate_content'`, and `activities.type` is free text.
+
+| File | Role |
+|---|---|
+| `src/lib/outreach/grounding.ts` | the check that overrules the model. **Pure.** |
+| `src/lib/outreach/draft.ts` | orchestrator, mirrors `scoring/score.ts` |
+| `src/lib/ai/prompts/generate.ts` | the prompt, as a file |
+| `src/lib/ai/schemas/generate.ts` | SPEC §5's Zod output |
+| `scripts/generate-content.ts` | `pnpm generate:content` |
+
+### The design decision that matters
+
+**The grounding check runs in code and overrules the model's own `missing_info`** —
+the same division `rubric.ts` already enforces for scoring: the model supplies
+judgement, the code decides the outcome. A model answering "no gaps" while writing
+an invented price has not reported a gap; it has written a lie that would go to a
+customer under the workspace's name. So the text itself is scanned, and a
+price-shaped claim with no verbatim support in active `knowledge_docs` forces
+`needs_input` whatever the model said.
+
+### Three review rounds, and the worst defect was found last
+
+This is the part worth keeping. Each layer found something the previous one
+missed, and the severity went **up**, not down:
+
+1. **QA** found the matcher was a bare `corpus.includes(term)` with no boundary.
+   So an invented number that was a digit-suffix of a real one was *certified as
+   grounded*: `5%` against a doc saying `15%`, and — the one that decided the fix —
+   `1 hari` against `21 hari kerja`. A delivery promise wrong by 20x, actively
+   marked safe by the code built to catch it.
+2. **The reviewer, auditing the fix**, cleared the new regex thoroughly
+   (escaping complete, lookarounds symmetric, no ReDoS — a 600 KB adversarial
+   string normalised in 3 ms) and then found the real hole one level up: **the
+   currency detector only fired on a literal `Rp`/`IDR`.**
+
+   ```
+   "Paket kami cuma 199 ribu per bulan."   claims=[]  -> pending_approval
+   "Mulai 1,5 juta per bulan saja."        claims=[]  -> pending_approval
+   "Investasinya 299rb per outlet."        claims=[]  -> pending_approval
+   "Harga 299.000 per bulan."              claims=[]  -> pending_approval
+   ```
+
+   That is the most common way Indonesian sales copy writes a price, and a prompt
+   asking for natural salesperson language actively encourages it over the formal
+   `Rp 299.000`. The module header made it worse by reassuring the next maintainer
+   that only *foreign* currency evaded. Now three patterns cover rupiah in every
+   digit form, with `(?<!rp)` guarding against double-claiming `Rp 199 ribu`.
+
+**Why the last one was missed twice:** both earlier passes probed with
+`Rp 299.000`, the formal form. The reviewer found it by reading the prompt and the
+detector *side by side* and asking what language the prompt actually encourages —
+a question that does not arise from reading the detector alone.
+
+### The detector's documented limits
+
+Measured, not guessed, and left open on purpose because human approval is the
+backstop: spelled-out numbers (`dua ratus ribu rupiah`), foreign currency
+(`USD 99`), unmarked amounts below 1.000, same amount under a different unit
+(`Rp 299.000 per transaksi` grounding against `per bulan`), and a bare `diskon`
+with no number beside it. Probed and confirmed *not* leaking: ranges,
+`mulai dari`, per-unit pricing, and digit-suffix collisions.
+
+### Known issue — the happy path has never run against a live model
+
+Every attempt hit `AI_APICallError: This model is currently experiencing high
+demand`, and **there is no fallback**: `OPENAI_API_KEY` is unset, so
+`configuredModels()` filters `gpt-4.1-mini` out of the chain entirely and the
+three retries all land on the same Google model. A provider outage currently stops
+qualification and drafting completely.
+
+Proven: the grounding logic (pure, unit-tested), the orchestration against
+scripted responses, the `model_failed` path (verified live), the no-email skip
+path (verified live against `data-riil`). **Not proven:** whether the prompt
+elicits output `generateContentSchema` accepts from a real model. No test can
+prove that — only a live call, and none has succeeded.
+
+This also brings **known issue 8** due: it flagged the Google free tier as a
+launch blocker specifically for Module 5, because that is where a real customer's
+data enters a prompt. Module 5 has now arrived. A paid key answers both that and
+the missing fallback.
+
+### Two follow-ups raised in review and deliberately not built
+
+1. `decideDraftStatus` gathers its reasons but writes them only to
+   `activities.payload`; the approvals screen shows the amber `needs_input` badge
+   without naming *which* price was refused. Fixing it properly needs a `messages`
+   column, and this slice correctly took no migration.
+2. `draft.ts` joins companies/contacts on id without a `workspace_id` predicate
+   beside it. The lead row is workspace-filtered, which is what stops the
+   cross-tenant case, and `db/queries/records.ts` joins the same way — a
+   pre-existing pattern, defence-in-depth only.
+
+Gates: `typecheck` clean, `lint` clean, `test` 528 in 15 files,
+`test:integration` 192 in 12 files.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
@@ -2364,6 +2474,8 @@ setup in `docs/n8n-integration.md`.
 | 74 | `fingerprintTarget` excludes `notes` by object rest, and a test pins the key set | The rest spread defaults new fields to "hashed", which fails in the safe direction — an allowlist would silently *exclude* a field somebody forgot to add, and a field that does change the space would stop resetting cursors. But that safety stops at `canonicalizeTarget`, which is itself a hand-written literal: an optional field added to the schema and not to it is dropped with no TypeScript error, demonstrated by adding one and getting `tsc` exit 0. So the guard is a test comparing `Object.keys(canonicalizeTarget(t))` against `searchTargetSchema.shape` — it fails for optional and required fields alike, and it is the only thing here that scales past the next person to touch the file. |
 | 75 | The plan's item schema is parsed **inside** the transaction, not after commit | Found in review 2026-09-23. A response field bound narrower than its source (`hl` at 10 chars against a `language` that allows 11) made one tenant's data able to 500 the whole plan *after* the cursors and claims had committed — the retry then got `already_planned` and a day was silently lost across every tenant. Validating before commit means an unserialisable plan rolls back its own advance and the retry gets a real plan. The general rule this encodes: a post-commit parse can only ever turn a bug into a discarded day, so nothing that can throw may run after commit. |
 | 76 | Cursor writes are serialised by `FOR NO KEY UPDATE` on the **campaign** row, not on the cursor row | The cursor row does not exist on the first day of a sweep, so there is nothing to lock. `NO KEY` rather than `FOR UPDATE` so a planner does not block the `FOR KEY SHARE` every lead insert takes on its campaign row. Campaigns are locked in `id` order in their own statement and cursors read in a second one — a join inside the locked statement would hold the lock and still read the pre-block snapshot under READ COMMITTED. Load-bearing consequence for step 3: ingest maintaining saturation counters on `scrape_cursors` becomes a second writer, and it must take the same campaign lock first. Noted at the write site in `plan.ts`. |
+| 77 | The grounding check lives in code and **overrules** the model's own `missing_info` | Same division `rubric.ts` already enforces: the model supplies judgement, the code decides the outcome. A model that answers `missing_info: []` while quoting an invented price has not reported a gap — it has written a claim that would reach a customer under the workspace's name, which `.claude/rules/ai.md` calls a lie rather than a bug. Trusting the model's self-report would make the whole check decorative, because the failure mode being guarded against is precisely a model that is confidently wrong about what it knows. |
+| 78 | The detector is narrow by design, and its holes are written into the module header rather than closed | Entailment-matching arbitrary prose against a knowledge base is a research problem, and a bad approximation either flags every draft or lulls the reviewer into trusting it. So it catches only what SPEC §5 names and a salesperson cannot check at a glance: money, discounts, percentages, numeric delivery commitments. The holes that remain were **measured, not guessed**, and are listed in the file — because a known hole is a decision while an unknown one is a trap, and the 2026-09-23 review proved that in the sharpest way: the header's reassurance that "only `Rp` and `IDR` are recognised" had read as "rupiah is covered" when in fact every rupiah price written without the marker evaded entirely. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
