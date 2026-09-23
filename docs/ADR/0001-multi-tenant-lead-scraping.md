@@ -647,3 +647,66 @@ The stride permutation. A read of `strideFor` over every block size from 1 to
 properties, so §2 step 3 stands exactly as written. Bijectivity is guaranteed
 structurally by the coprime test in the loop, not by the range anyone happened
 to test.
+
+---
+
+## Amendment 2 — §3 and §6 contradict each other on tier evidence (2026-09-23)
+
+Found while implementing step 2. Recorded rather than resolved: the resolution
+belongs to step 3, and the shape it should take is argued below.
+
+### The contradiction
+
+§3 classifies a tier from the saturation signal `scripts/lead-stats.ts` measures
+— `newLast14` and `mergedLast14`, which are **lead counts**.
+
+§6 bounds the one cross-tenant query with three rules, the first of which is that
+it "selects only `(campaign_id, workspace_id, target, plan, quota, valid_until,
+timezone, cursor fields)` and **never touches a lead, contact or message**".
+
+The planner therefore needs evidence it is forbidden to read. Both statements are
+deliberate and each is right on its own terms; together they are not satisfiable.
+
+### What it does in practice
+
+`context.ts` honours §6, so evidence arrives as zeroes. `classifyTier` then falls
+straight into its second branch — `newLast14 + mergedLast14 < TIER_SAMPLE_MIN` →
+keep the current tier — for every campaign whose `lap > 0`. Only the `lap === 0`
+branch can ever fire. A cursor past its first lap keeps its stored tier forever,
+and since the column defaults to `burst`, the default is "spend the most".
+
+Concretely for `data-riil`: `lap = 1` was seeded specifically to stop it bursting
+over ground already swept, and on its own it does not, because nothing derives
+the tier from the lap. At `burst` it would be planned `ceil(1500 / 5) = 300`
+searches a day across a space fully covered in the 2026-09-07 week. Migration
+`0017` therefore seeds `tier = 'maintenance'` explicitly — `ceil(1500 / 90) = 17`
+a day. That is a stopgap for one known campaign, not a fix.
+
+### The resolution this should get in step 3
+
+Owner decision, 2026-09-23: patch the known campaign now, fix it properly in
+step 3. Of the three options considered, the one to build is **moving the
+saturation counters onto the cursor row**.
+
+The ingest path already distinguishes a created lead from a merged one — it
+writes a `lead_duplicate_merged` activity — and it already knows the campaign.
+Having it maintain rolling counters on `scrape_cursors` means the planner reads
+only cursor columns, §6 survives untouched, and `classifyTier` gets real evidence
+instead of zeroes.
+
+The alternative of letting `context.ts` read aggregate lead counts was rejected.
+It is less code, and an aggregate is not a PII leak — but it weakens the single
+rule that keeps the codebase's only cross-tenant query honest, and a weakened
+rule is hard to restore once something depends on it.
+
+### A second, smaller defect in §3, found by the same implementation
+
+§3's worked example claims "add a hundredth tenant in maintenance
+(`ceil(1500/90) = 17`) and it still gets its 17". That does not follow from the
+smoothing §3 specifies. Proportional-to-(weight × desired) allocation hands that
+tenant 4 of 2500, and the `MIN_BATCH` floor lifts it to 10, not 17. Getting 17
+would need weighted max-min water-filling, a different algorithm.
+
+The implementation follows the specified smoothing — the ten-tenant example
+matches exactly, at 250 each — and its test asserts 10 for the hundredth tenant,
+with the discrepancy named. The prose is what is wrong here, not the code.
