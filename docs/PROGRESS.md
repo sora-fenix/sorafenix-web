@@ -37,9 +37,9 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 466 tests, 13 files |
+| `pnpm test` | ✅ 496 tests, 14 files |
 | `pnpm build` | ✅ all 19 routes built |
-| `pnpm test:integration` | ✅ 150 tests, 10 files |
+| `pnpm test:integration` | ✅ 178 tests, 11 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -1790,6 +1790,91 @@ Gates: `typecheck` clean, `lint` clean, `test` 466 in 13 files,
 
 ---
 
+## ADR 0001 step 2 — the plan endpoint (2026-09-23)
+
+`campaigns.target` is finally read. `POST /api/webhooks/n8n/plan` computes, for a
+given day, exactly which searches each tenant runs next — bounded by a shared
+daily budget so no client can starve another — and n8n learns nothing about
+tenants, because every plan item carries its own `campaign_id`.
+
+| File | Role |
+|---|---|
+| `src/lib/scraping/allocate.ts` | tiers, desired volume, weighted smoothing, anti-starvation. **Pure.** |
+| `src/lib/scraping/context.ts` | the one sanctioned cross-tenant read |
+| `src/lib/scraping/plan.ts` | one transaction: parse, reset, allocate, write back |
+| `src/app/api/webhooks/n8n/plan/route.ts` | HMAC → Zod → serialise |
+| `src/lib/webhooks/signature.ts` | the verifier, lifted out of the leads route |
+| `drizzle/0017_data_riil_search_target.sql` | `data-riil`'s target + seeded cursor |
+
+**The endpoint has no caller, deliberately.** Pointing n8n at it is its own slice:
+the change is a manual export-patch-import against the live container
+(`docs/n8n-integration.md`), outside anything `typecheck`/`lint`/`test` can
+verify. Same precedent as the leads route, which shipped and was proved by signed
+HTTP calls before n8n was wired at all. **No new leads flow until that lands.**
+
+Quota and metering (ADR §4) stay in step 3. So `desired = min(tierDesired,
+MAX_BATCH_PER_CAMPAIGN)` with no quota factor, and `skipped` carries only the
+reasons this slice can produce.
+
+### What review caught, stated as the numbers
+
+Three audit rounds, each finding real defects — including in the previous round's
+fix code. What is worth recording is not the green suite but what happened when
+each fix was removed again:
+
+| Defect | Measured failure |
+|---|---|
+| `hl` bound narrower than `language` | 500 **after commit** → cursors durable, retry gets `already_planned` → a day lost across every tenant |
+| Claim key omitted `plan_date` | day two returns `replayed: true` — silent, permanent, estate-wide stall |
+| No row lock on the cursor read | `expected length 20 but got 40` — the same twenty searches billed twice |
+| Cursor owned by another workspace | 20 items issued for a sweep nothing would ever record |
+
+The `hl` fix is the one worth understanding: validation moved **inside** the
+transaction, so a plan that cannot be serialised rolls back its own cursor
+advance and claims. A post-commit parse could only ever turn a bug into a
+discarded day.
+
+**Tenant isolation is clean structurally, not just by test.** The request schema
+carries no workspace id, campaign id or slug — only a key, a date, a cap and a
+flag — so no request field *can* steer a write. Both write paths were traced and
+key `workspace_id` off the candidate row.
+
+### Two things that will bite if forgotten
+
+1. **The tier trap.** `scrape_cursors.tier` defaults to `burst`, and Amendment 2's
+   contradiction means `classifyTier` can only fire its `lap === 0` branch. So a
+   campaign behaves correctly until its first lap completes, then sticks at
+   `burst` — `ceil(spaceSize / 5)` a day, forever, re-sweeping covered ground.
+   `0017` patches the one campaign that exists. **The second tenant onboarded
+   before step 3 lands will need the same manual patch, and nothing in the code
+   or the seed will remind anyone.**
+2. **`tests/integration/plan.test.ts` restores foreign tenants' cursors only in
+   `afterAll`.** A crash or an interrupt mid-file leaves real `position`,
+   `lap_started_on` and `tier_changed_on` advanced. The far-future plan date
+   protects `last_planned_on` and nothing else. Every run so far has been checked
+   clean afterwards, but that is procedure, not a guarantee — the fix is to wrap
+   the file in one rolled-back transaction the way `rls.test.ts` does.
+
+### Assumptions
+
+Migrations **0011–0017 are applied forward on the local database only**. A
+from-scratch `pnpm db:reset` has never been run for them, because it would
+destroy the real scraped `data-riil` leads and CLAUDE.md forbids that without
+asking. A clean apply of the chain is unverified.
+
+`0017`'s predicate was tightened after review to `target->>'version' is null`: it
+fills a blank or replaces a pre-ADR target `parseTarget` rejects, and can never
+overwrite a versioned one. Verified across three cases in a rolled-back
+transaction — today's state is untouched, a blank is filled, a legacy
+`{note, source}` is replaced. One consequence of history: the live row got its
+target from the *earlier*, looser predicate, so local state and a clean apply
+agree only because the tightened version also matches that case.
+
+Gates: `typecheck` clean, `lint` clean, `test` 496 in 14 files,
+`test:integration` 178 in 11 files.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
@@ -2150,6 +2235,8 @@ setup in `docs/n8n-integration.md`.
 | 72 | `member:invite` is split out of `member:manage`, and the "not at `owner`" ceiling lives in the RLS policy rather than the matrix | Owner decision 2026-09-21 was that managers may invite. Granting `member:manage` would have restored the takeover `0012` had just closed, since that action also carries change-role. Splitting keeps the answer to the question actually asked. The ceiling cannot live in `permissions.ts` because `can(role, action)` never sees the role being granted — a manager inviting at `owner` is indistinguishable there from inviting at `viewer`. Putting it in the `WITH CHECK` is not a workaround but the correct layer: the matrix answers "may this person invite at all", the policy answers "at what level". |
 | 73 | "A workspace keeps at least one owner" is a **trigger**, not an RLS policy | Decided 2026-09-23 while closing the caveat in commit `b6acca0`. Two reasons, and the second decides it. The orphaning has two doors — `DELETE` on your own membership, and `update … set role = 'viewer'`, which passes `memberships_update_owner` because that policy checks the actor's role and never the target row's new value. And RLS does not run on the path most likely to do it: `drizzle.ts` uses `DATABASE_URL`, which bypasses RLS, and that is the handle every server-side write in `lib/` uses — a policy would protect the browser and leave the application free to orphan a workspace by accident. The invariant is about the data, not the caller, so it belongs at the layer nothing bypasses. Not deferred: a handover should add the new owner before removing the old, and a deferred constraint would permit the reverse and only complain at COMMIT, further from the cause. |
 | 74 | `fingerprintTarget` excludes `notes` by object rest, and a test pins the key set | The rest spread defaults new fields to "hashed", which fails in the safe direction — an allowlist would silently *exclude* a field somebody forgot to add, and a field that does change the space would stop resetting cursors. But that safety stops at `canonicalizeTarget`, which is itself a hand-written literal: an optional field added to the schema and not to it is dropped with no TypeScript error, demonstrated by adding one and getting `tsc` exit 0. So the guard is a test comparing `Object.keys(canonicalizeTarget(t))` against `searchTargetSchema.shape` — it fails for optional and required fields alike, and it is the only thing here that scales past the next person to touch the file. |
+| 75 | The plan's item schema is parsed **inside** the transaction, not after commit | Found in review 2026-09-23. A response field bound narrower than its source (`hl` at 10 chars against a `language` that allows 11) made one tenant's data able to 500 the whole plan *after* the cursors and claims had committed — the retry then got `already_planned` and a day was silently lost across every tenant. Validating before commit means an unserialisable plan rolls back its own advance and the retry gets a real plan. The general rule this encodes: a post-commit parse can only ever turn a bug into a discarded day, so nothing that can throw may run after commit. |
+| 76 | Cursor writes are serialised by `FOR NO KEY UPDATE` on the **campaign** row, not on the cursor row | The cursor row does not exist on the first day of a sweep, so there is nothing to lock. `NO KEY` rather than `FOR UPDATE` so a planner does not block the `FOR KEY SHARE` every lead insert takes on its campaign row. Campaigns are locked in `id` order in their own statement and cursors read in a second one — a join inside the locked statement would hold the lock and still read the pre-block snapshot under READ COMMITTED. Load-bearing consequence for step 3: ingest maintaining saturation counters on `scrape_cursors` becomes a second writer, and it must take the same campaign lock first. Noted at the write site in `plan.ts`. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

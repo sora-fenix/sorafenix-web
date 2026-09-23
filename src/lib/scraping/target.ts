@@ -101,6 +101,19 @@ export const RESULTS_PER_REQUEST_MAX = 10
 /** keywords × locations × pages. A tenant must not be able to author a four-year lap. */
 export const MAX_SPACE_SIZE = 20_000
 
+/**
+ * Serper `gl` and `hl`, exported because they are the source of truth for every
+ * later bound on the same value.
+ *
+ * The plan endpoint used to re-state `hl` as `min(2).max(10)`, one character
+ * narrower than this pattern allows. A target with an 11-character language tag
+ * parsed here, allocated, advanced its cursor and then failed the response
+ * schema — taking the whole estate's plan down with it, after the write had
+ * committed. A second expression of the same rule is a second rule.
+ */
+export const COUNTRY_PATTERN = /^[a-z]{2}$/
+export const LANGUAGE_PATTERN = /^[a-z]{2}(-[A-Za-z0-9]{2,8})?$/
+
 export const searchTargetSchema = z
   .object({
     /** Bumped only when a field's meaning changes. Parsers switch on it. */
@@ -119,9 +132,9 @@ export const searchTargetSchema = z
      */
     resultsPerRequest: z.int().min(1).max(RESULTS_PER_REQUEST_MAX).default(10),
     /** Serper `gl`. ISO-3166-1 alpha-2, lowercase. Not defaulted to 'id'. */
-    country: z.string().regex(/^[a-z]{2}$/),
+    country: z.string().regex(COUNTRY_PATTERN),
     /** Serper `hl`. BCP-47 primary subtag. */
-    language: z.string().regex(/^[a-z]{2}(-[A-Za-z0-9]{2,8})?$/),
+    language: z.string().regex(LANGUAGE_PATTERN),
     /** Optional note for the human who edits this. Never sent to Serper. */
     notes: z.string().max(500).optional(),
   })

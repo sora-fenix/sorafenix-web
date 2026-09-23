@@ -1,11 +1,9 @@
-import { createHmac, timingSafeEqual } from 'node:crypto'
-
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 
 import { db, schema } from '@/lib/db/drizzle'
-import { serverEnv } from '@/lib/env'
 import { type IngestItem, ingestLeads, rejectionsFor } from '@/lib/leads/ingest'
+import { verifyN8nSignature } from '@/lib/webhooks/signature'
 
 import { and, eq } from 'drizzle-orm'
 
@@ -55,6 +53,19 @@ const payloadSchema = z.object({
   source: z.enum(['serper_places', 'serper_search', 'csv']),
   idempotency_key: z.string().min(1).max(200),
   items: z.array(itemSchema).max(MAX_ITEMS),
+  /**
+   * Which plan item produced this batch (ADR 0001 §5). Optional because a CSV
+   * or a manual post has no plan behind it. Nothing reads it yet: it is stored
+   * with the webhook event so phase-2 reconciliation — issued searches against
+   * executed ones — has something to key on without re-deriving it from a
+   * timestamp.
+   */
+  plan: z
+    .object({
+      plan_date: z.iso.date(),
+      space_index: z.int().min(0),
+    })
+    .optional(),
 })
 
 type Payload = z.infer<typeof payloadSchema>
@@ -79,45 +90,13 @@ function toIngestItems(payload: Payload): IngestItem[] {
 }
 
 // -----------------------------------------------------------------------------
-// Signature
-// -----------------------------------------------------------------------------
-
-const SIGNATURE_FORMAT = /^sha256=([a-f0-9]{64})$/i
-
-/**
- * Constant-time comparison of `x-sora-signature` against an HMAC of the raw body.
- *
- * The format is checked before the compare so that `timingSafeEqual` is always
- * handed two buffers of equal length — it throws otherwise, and a throw here
- * would leak "your signature was the wrong length" as a distinct response.
- */
-function signatureMatches(rawBody: string, header: string | null): boolean {
-  if (header === null) return false
-
-  const match = SIGNATURE_FORMAT.exec(header.trim())
-  if (match === null) return false
-
-  const provided = match[1]
-  if (provided === undefined) return false
-
-  const expected = createHmac('sha256', serverEnv().N8N_WEBHOOK_SECRET)
-    .update(rawBody, 'utf8')
-    .digest('hex')
-
-  return timingSafeEqual(
-    Buffer.from(provided.toLowerCase(), 'hex'),
-    Buffer.from(expected, 'hex'),
-  )
-}
-
-// -----------------------------------------------------------------------------
 // Handler
 // -----------------------------------------------------------------------------
 
 export async function POST(request: Request): Promise<NextResponse> {
   const rawBody = await request.text()
 
-  if (!signatureMatches(rawBody, request.headers.get('x-sora-signature'))) {
+  if (!verifyN8nSignature(rawBody, request.headers.get('x-sora-signature'))) {
     return NextResponse.json({ error: 'invalid_signature' }, { status: 401 })
   }
 
