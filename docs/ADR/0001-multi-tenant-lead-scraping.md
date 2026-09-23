@@ -90,8 +90,12 @@ export const searchTargetSchema = z
     /** Optional note for the human who edits this. Never sent to Serper. */
     notes: z.string().max(500).optional(),
   })
+  // Amendment 1: measured on the CANONICAL target. Counting the raw arrays
+  // rejected `pages: [1, 1]` x 60 x 250 as over the cap while the identical
+  // real space (15 000) passed as `pages: [1]` — a rejection contradicting the
+  // tenant's own arithmetic.
   .refine(
-    (t) => t.keywords.length * t.locations.length * t.pages.length <= MAX_SPACE_SIZE,
+    (t) => canonicalSpaceSize(t) <= MAX_SPACE_SIZE,
     { message: 'search space exceeds MAX_SPACE_SIZE' },
   )
 
@@ -107,8 +111,9 @@ Deliberate properties:
   point 6 above cannot be re-introduced by editing a literal.
 - **`version: 1` is required**, so a future v2 is a discriminated parse, not a
   guess about which rows are old.
-- **The space size is bounded at parse time**, so a tenant cannot author a space
-  that takes four years to walk and discover it from a dashboard.
+- **The space size is bounded at parse time** — measured on the *canonical*
+  target, so a tenant cannot author a space that takes four years to walk and
+  discover it from a dashboard.
 - **No `industry`, `size` or `budget` field.** `products.icp` already holds the
   ideal-customer profile and the scoring rubric reads it. `target` answers "what
   do we type into Serper", nothing else. One field, one job.
@@ -121,9 +126,9 @@ Invalid or absent `target` → the campaign contributes zero items and appears i
 **Enumeration is a pure function of the target.** `buildSearchSpace(target)`
 returns a deterministic, stable-ordered `SearchItem[]`:
 
-1. Canonicalise: trim, collapse internal whitespace, lowercase `country` and
-   `language`, sort `keywords` and `locations` (locale-independent codepoint
-   sort), sort and dedupe `pages`.
+1. Canonicalise: normalise to **NFC**, trim, collapse internal whitespace,
+   lowercase `country` and `language`, then sort **and dedupe** `keywords`,
+   `locations` and `pages` alike (locale-independent codepoint sort).
 2. Enumerate **page-major ascending** — every page-1 combination before any
    page-2 combination. Page 1 is the highest yield per credit, so a tenant's
    first days buy the most.
@@ -151,7 +156,9 @@ row than as a set of columns somebody must remember to null together.
 1. Load every campaign with `status = 'running'` and `target is not null`, joined
    to its workspace and its cursor.
 2. `parseTarget(campaign.target)`. Failure → skip, reason `invalid_target`.
-3. `fingerprint = sha256(JSON.stringify(canonicalize(target)))`. If there is no
+3. `fingerprint = sha256(JSON.stringify(canonicalize(target) without notes))`.
+   `notes` is excluded because it is never sent to Serper and therefore cannot
+   change the space — see the amendment below. If there is no
    cursor, or `fingerprint !== cursor.space_fingerprint`, the cursor resets:
    `position = 0`, `lap = 0`, new fingerprint, new `space_size`. **Editing the
    target restarts the space.** An index into a space that no longer exists is
@@ -584,3 +591,59 @@ the mapping would have to be remembered in two places forever.
 - Lifting the HMAC verifier out of the ingest route into
   `src/lib/webhooks/signature.ts`. Pure move, no decision in it.
 - The two new `PLAN_LABELS` keys in `src/components/crm/labels.tsx`.
+
+---
+
+## Amendment 1 — canonicalisation and the fingerprint (2026-09-23)
+
+Owner decision during step 1's review, before any code shipped. Three changes to
+§1 and §2, all of which alter what `fingerprintTarget` returns.
+
+**They were made now precisely because they change the fingerprint.** No cursor
+row exists outside test fixtures today, so the cost is zero. After a paying
+client has a running sweep, the same three edits reset that client's `position`
+and `lap` and re-sweep a space they have already paid Serper for. There is no
+later moment when this gets cheaper.
+
+### What changed
+
+1. **`keywords` and `locations` are deduped**, not merely sorted. The original
+   text specified dedupe for `pages` alone. Nothing anywhere justified the
+   asymmetry, and the consequence was one-sided: a duplicated keyword produces
+   two byte-identical `q` strings per lap — two sequential Serper calls whose
+   second result set lands entirely as merged duplicates, against a budget this
+   ADR itself argues is throughput-bound.
+
+2. **`notes` is excluded from the fingerprint.** It stays in the schema and in
+   the stored target; it is simply not part of the canonical form that gets
+   hashed. The original text said `sha256(JSON.stringify(canonicalize(target)))`
+   with no exclusion, which was implemented faithfully and was wrong on this
+   ADR's own terms: §2 states the reset exists because "an index into a space
+   that no longer exists is meaningless", and `notes` is documented one line
+   above as never sent to Serper. It provably cannot change the space, so it
+   produced resets the stated rationale does not justify — fixing a typo in a
+   human comment restarted a 90-day sweep.
+
+3. **Canonicalisation normalises to NFC** before sorting and hashing. Measured
+   on the implementation: `cửa hàng` in NFC and the same string in NFD render
+   identically and fingerprint as `981684a64a1a1d4f…` and `143208e71ef3eb38…`.
+   An ops person re-pasting Vietnamese or Indonesian text from an editor that
+   emits NFD would silently restart the tenant's lap. This is not a hypothetical
+   market: §1 exists to make an FMCG tenant in Vietnam expressible.
+
+### A validation bug the first change exposed
+
+The `MAX_SPACE_SIZE` refine counted the **raw** arrays while canonicalisation
+deduped. Measured: `pages: [1, 1]` with 60 keywords × 250 locations was rejected
+as exceeding the cap, while the identical real space — 15 000 items, cap 20 000 —
+was accepted when written as `pages: [1]`. The tenant saw a rejection that
+contradicted their own arithmetic. The bound is now measured on the canonical
+target, so the number a tenant is judged on is the number actually swept.
+
+### What did not change
+
+The stride permutation. A read of `strideFor` over every block size from 1 to
+20 000 found zero violations of the prime / `> sqrt(n)` / coprime / bijection
+properties, so §2 step 3 stands exactly as written. Bijectivity is guaranteed
+structurally by the coprime test in the loop, not by the range anyone happened
+to test.
