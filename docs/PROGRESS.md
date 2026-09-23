@@ -37,9 +37,9 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 379 tests, 12 files |
+| `pnpm test` | ✅ 466 tests, 13 files |
 | `pnpm build` | ✅ all 19 routes built |
-| `pnpm test:integration` | ✅ 137 tests, 10 files |
+| `pnpm test:integration` | ✅ 150 tests, 10 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -1710,6 +1710,86 @@ Gates: `typecheck` clean, `lint` clean, `test` 381 in 12 files,
 
 ---
 
+## ADR 0001 step 1 — target and cursor, and an invariant it forced (2026-09-23)
+
+The first piece of multi-tenant scraping. `campaigns.target` is now readable and
+every campaign gets its own cursor through its own space, which is what replaces
+the calendar arithmetic (`START_DATE` + `dayIndex % SLICES`) that made the lead
+hunter single-tenant by construction.
+
+**Schema and pure logic only.** Nothing reads `target` yet and nothing writes a
+cursor. The plan endpoint, quota and the n8n change are ADR steps 2 and 3.
+Seeding a `target` for `data-riil` was deliberately deferred (owner decision,
+2026-09-23) to the slice that ships the plan endpoint, because a target with no
+reader cannot be shown to work.
+
+| File | Role |
+|---|---|
+| `src/lib/scraping/target.ts` | Zod shape, canonicalisation, fingerprint, stride, cursor window. Pure. |
+| `src/lib/db/schema/scraping.ts` | `scrape_cursors` + `scrape_tier` |
+| `drizzle/0014_*.sql`, `0015_rls_scraping.sql` | table + hand-written RLS |
+| `drizzle/0016_workspace_keeps_an_owner.sql` | the trigger below |
+| `tests/unit/scraping-target.test.ts` | 85 cases |
+
+### What the pipeline caught, which is the part worth recording
+
+The gates were not ceremony. QA found `scrape_cursors` had a `workspace_id` but
+was never added to `WORKSPACE_SCOPED_TABLES` — the coverage guard in
+`rls.test.ts` exists for exactly that and caught it. The engineer's account of
+why is worth keeping: it ran `typecheck`, `lint` and `test`, reported them
+honestly, and never ran `test:integration`, where the guard lives.
+
+Review then found six defects, two of which were reproduced against the code
+before being believed: a legal target rejected because the size check counted
+un-canonicalised arrays, and NFD-encoded text fingerprinting differently from
+NFC so a re-paste restarted a lap. A second review pass found three more **in
+the fix code itself** — the most useful being that `fingerprintTarget`'s comment
+claimed any new schema field is hashed automatically, when `canonicalizeTarget`
+is a hand-written allowlist and an *optional* new field is dropped with no
+TypeScript error. Demonstrated by adding one: `tsc` exit 0, suite green.
+
+That one is now pinned by a test comparing `Object.keys(canonicalizeTarget(t))`
+against the schema's own shape — a guard for every future field rather than a
+patch for one bug.
+
+### A workspace must keep at least one owner
+
+Commit `b6acca0` recorded, as an unaddressed caveat, that an owner could delete
+their own membership and leave a workspace nobody can administer. Closed here by
+`0016`, as a **trigger** rather than a policy, for two reasons:
+
+1. The orphaning has two doors. `DELETE` is the obvious one; the other is
+   `update memberships set role = 'viewer'` on your own row, because
+   `memberships_update_owner` checks the *actor's* role and never the target
+   row's new value.
+2. **RLS does not run on the path most likely to do it.** `drizzle.ts` connects
+   with `DATABASE_URL`, which bypasses RLS, and that is the handle every
+   server-side write in `lib/` uses. A policy would protect the browser and
+   leave the application free to orphan a workspace by accident.
+
+"At least one owner" is an integrity rule about the data, not an authorisation
+rule about the caller, so it belongs where it cannot be bypassed.
+
+Five cases. Verified by dropping the trigger and re-running: both protective
+cases failed with `expected '' to match /no owner/i` — an empty error message,
+so the delete and the demote had each genuinely succeeded. Handover still works
+(add the new owner, then remove the old), workspace deletion is not blocked by
+its own cascade, and removing a non-owner never touches the trigger.
+
+### An assumption to be aware of
+
+Migrations 0011–0016 are applied **forward** on the local database. A
+from-scratch `pnpm db:reset` has never been run for them: it would destroy the
+real scraped `data-riil` leads, and CLAUDE.md forbids that without asking. So a
+clean apply of this chain is unverified. The risk is concentrated in `0016`,
+whose trigger is the only one of the six that changes behaviour on every write
+to `memberships` rather than only on grants.
+
+Gates: `typecheck` clean, `lint` clean, `test` 466 in 13 files,
+`test:integration` 150 in 10 files.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
@@ -2068,6 +2148,8 @@ setup in `docs/n8n-integration.md`.
 | 70 | An RLS policy may not be more permissive than `src/lib/auth/permissions.ts`; where they disagree, the policy is the bug | Found 2026-09-20: the matrix gave `member:manage` to `owner` alone while the membership write policies admitted `owner` and `manager`. The matrix only decides for a user who goes through our UI — PostgREST with the anon key never reaches it — so the looser layer is the one that actually holds, and the stricter one is decoration. Treating the matrix as the specification and the policy as the implementation makes the gap a bug with an obvious fix instead of a design debate, which is how it was wrongly filed the first time (known issue 27). A widening is then necessarily deliberate: it takes an edit to both layers. |
 | 71 | `JUMLAH` (Serper `num`) is **10**, and the ADR makes values above it unrepresentable | Corrects decision 44 and the credit arithmetic throughout the 2026-09-07 section. Serper bills 1 credit for a request asking up to 10 results and 2 for 11–100, so `JUMLAH = 20` doubled the price of every search in the sweep — the week cost ~3500 credits against a ~2500 free tier, not the 1750 recorded at the time. It bought nothing, because the same section measures Serper returning at most 10 whatever `num` asks. The comment justifying it ("asking for more costs nothing") was the whole defect: a wrong fact, stated confidently, next to the measurement that disproved it. `campaigns.target` therefore caps `resultsPerRequest` at 10 in the Zod type rather than in a comment, so this cannot be reintroduced by editing a literal. |
 | 72 | `member:invite` is split out of `member:manage`, and the "not at `owner`" ceiling lives in the RLS policy rather than the matrix | Owner decision 2026-09-21 was that managers may invite. Granting `member:manage` would have restored the takeover `0012` had just closed, since that action also carries change-role. Splitting keeps the answer to the question actually asked. The ceiling cannot live in `permissions.ts` because `can(role, action)` never sees the role being granted — a manager inviting at `owner` is indistinguishable there from inviting at `viewer`. Putting it in the `WITH CHECK` is not a workaround but the correct layer: the matrix answers "may this person invite at all", the policy answers "at what level". |
+| 73 | "A workspace keeps at least one owner" is a **trigger**, not an RLS policy | Decided 2026-09-23 while closing the caveat in commit `b6acca0`. Two reasons, and the second decides it. The orphaning has two doors — `DELETE` on your own membership, and `update … set role = 'viewer'`, which passes `memberships_update_owner` because that policy checks the actor's role and never the target row's new value. And RLS does not run on the path most likely to do it: `drizzle.ts` uses `DATABASE_URL`, which bypasses RLS, and that is the handle every server-side write in `lib/` uses — a policy would protect the browser and leave the application free to orphan a workspace by accident. The invariant is about the data, not the caller, so it belongs at the layer nothing bypasses. Not deferred: a handover should add the new owner before removing the old, and a deferred constraint would permit the reverse and only complain at COMMIT, further from the cause. |
+| 74 | `fingerprintTarget` excludes `notes` by object rest, and a test pins the key set | The rest spread defaults new fields to "hashed", which fails in the safe direction — an allowlist would silently *exclude* a field somebody forgot to add, and a field that does change the space would stop resetting cursors. But that safety stops at `canonicalizeTarget`, which is itself a hand-written literal: an optional field added to the schema and not to it is dropped with no TypeScript error, demonstrated by adding one and getting `tsc` exit 0. So the guard is a test comparing `Object.keys(canonicalizeTarget(t))` against `searchTargetSchema.shape` — it fails for optional and required fields alike, and it is the only thing here that scales past the next person to touch the file. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 

@@ -569,3 +569,121 @@ describe('membership writes', () => {
                    where workspace_id = ${alpha.workspaceId} and user_id = ${managerId}`
   })
 })
+
+// -----------------------------------------------------------------------------
+// An integrity rule, not an authorisation rule
+// -----------------------------------------------------------------------------
+
+describe('a workspace keeps at least one owner', () => {
+  // These cases live beside the policy tests on purpose: the contrast is the
+  // point. Every case above is enforced by RLS and therefore only on the
+  // Supabase-client path. `drizzle/0016` uses a TRIGGER instead, so the first
+  // case below — the privileged connection, which `privileged connection` above
+  // proves bypasses RLS entirely — is the one that would fail if this had been
+  // written as a policy.
+  let secondOwnerId: string
+
+  beforeAll(async () => {
+    const [user] = await reserved<{ id: string }[]>`
+      insert into auth.users (id, instance_id, aud, role, email)
+      values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
+              'authenticated', 'authenticated', 'rls-second-owner@example.test')
+      returning id`
+    if (user === undefined) throw new Error('second owner fixture failed')
+    secondOwnerId = user.id
+  })
+
+  it('stops the privileged handle orphaning a workspace, where RLS could not', async () => {
+    // lib/db/drizzle.ts connects with exactly this role. A DELETE policy would
+    // not run here at all.
+    await reserved.unsafe('savepoint keep_owner_privileged')
+    let message = ''
+    try {
+      await reserved.unsafe(
+        `delete from memberships where workspace_id = $1 and user_id = $2`,
+        [beta.workspaceId, beta.userId],
+      )
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    await reserved.unsafe('rollback to savepoint keep_owner_privileged')
+
+    expect(message).toMatch(/no owner/i)
+  })
+
+  it('stops the other door: demoting the last owner', async () => {
+    // memberships_update_owner checks the actor's role, never the target row's
+    // new value, so an owner setting their own row to 'viewer' passes the policy.
+    await reserved.unsafe('savepoint keep_owner_demote')
+    let message = ''
+    try {
+      await reserved.unsafe(
+        `update memberships set role = 'viewer' where workspace_id = $1 and user_id = $2`,
+        [beta.workspaceId, beta.userId],
+      )
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    await reserved.unsafe('rollback to savepoint keep_owner_demote')
+
+    expect(message).toMatch(/no owner/i)
+  })
+
+  it('allows an owner to leave once a second owner exists', async () => {
+    // The rule is "at least one", not "owners are permanent". Handover works in
+    // the safe order: add the new owner, then remove the old one.
+    await reserved.unsafe('savepoint keep_owner_handover')
+
+    await reserved`insert into memberships (workspace_id, user_id, role)
+                   values (${beta.workspaceId}, ${secondOwnerId}, 'owner')`
+
+    const deleted = await reserved.unsafe(
+      `delete from memberships where workspace_id = $1 and user_id = $2 returning id`,
+      [beta.workspaceId, beta.userId],
+    )
+    expect(deleted.length).toBe(1)
+
+    await reserved.unsafe('rollback to savepoint keep_owner_handover')
+  })
+
+  it('still lets a workspace be deleted, cascade and all', async () => {
+    // The trigger must not make a workspace undeletable. Its own row is gone by
+    // the time the AFTER trigger sees the cascaded membership.
+    await reserved.unsafe('savepoint keep_owner_cascade')
+
+    const [ws] = await reserved<{ id: string }[]>`
+      insert into workspaces (name, slug) values ('Doomed', 'doomed-ws') returning id`
+    if (ws === undefined) throw new Error('cascade fixture failed')
+    await reserved`insert into memberships (workspace_id, user_id, role)
+                   values (${ws.id}, ${secondOwnerId}, 'owner')`
+
+    const removed = await reserved.unsafe(
+      `delete from workspaces where id = $1 returning id`,
+      [ws.id],
+    )
+    expect(removed.length).toBe(1)
+
+    await reserved.unsafe('rollback to savepoint keep_owner_cascade')
+  })
+
+  it('does not fire for a non-owner, so ordinary removals stay cheap', async () => {
+    await reserved.unsafe('savepoint keep_owner_sales')
+
+    const [user] = await reserved<{ id: string }[]>`
+      insert into auth.users (id, instance_id, aud, role, email)
+      values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
+              'authenticated', 'authenticated', 'rls-leaving-sales@example.test')
+      returning id`
+    if (user === undefined) throw new Error('sales fixture failed')
+    await reserved`insert into memberships (workspace_id, user_id, role)
+                   values (${beta.workspaceId}, ${user.id}, 'sales')`
+
+    const deleted = await reserved.unsafe(
+      `delete from memberships where workspace_id = $1 and user_id = $2 returning id`,
+      [beta.workspaceId, user.id],
+    )
+    expect(deleted.length).toBe(1)
+
+    await reserved.unsafe('rollback to savepoint keep_owner_sales')
+  })
+})
