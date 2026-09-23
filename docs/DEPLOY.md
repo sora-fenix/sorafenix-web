@@ -36,7 +36,7 @@ is part of `DATABASE_URL`.
 
 ### 1b. Run the migrations — before the first deploy
 
-This is the step whose ordering matters most. The app expects 11 migrations'
+This is the step whose ordering matters most. The app expects 18 migrations'
 worth of tables, policies and functions (`0000`-`0010`). Deploy first and every page returns 500
 with a relation-does-not-exist error that reads like a code bug.
 
@@ -59,7 +59,7 @@ is never touched.
 Then confirm, against the same URL:
 
 ```sql
-select count(*) from drizzle.__drizzle_migrations;  -- expect 11 (0000-0010)
+select count(*) from drizzle.__drizzle_migrations;  -- expect 18 (0000-0017)
 select tablename from pg_tables where schemaname = 'public' order by 1;
 select relname, relrowsecurity from pg_class
   where relnamespace = 'public'::regnamespace and relkind = 'r';  -- every row true
@@ -183,11 +183,19 @@ auth allowlist.
 
 ### 3a. Point n8n at the deployed app
 
-In `docker-compose.n8n.yml`, `SORA_WEBHOOK_URL` is
-`http://host.docker.internal:3000/api/webhooks/n8n/leads` — this laptop. To send
-scraped leads to production, change it to
-`https://your-app.vercel.app/api/webhooks/n8n/leads` and recreate the container
-(`pnpm n8n:stop && pnpm n8n:start`).
+`docker-compose.n8n.yml` carries **two** SORA URLs, both pointing at this laptop.
+Change both and recreate the container (`pnpm n8n:stop && pnpm n8n:start`):
+
+| Variable | Production value |
+|---|---|
+| `SORA_WEBHOOK_URL` | `https://your-app.vercel.app/api/webhooks/n8n/leads` |
+| `SORA_PLAN_URL` | `https://your-app.vercel.app/api/webhooks/n8n/plan` |
+
+`SORA_PLAN_URL` is the one that decides the sweep: since ADR 0001 the workflow
+asks SORA what to search rather than holding a keyword list of its own, so a
+workflow pointed at a production app and a *stale* plan URL will happily sweep
+against the laptop and post the results nowhere useful. There is no
+`SORA_CAMPAIGN_ID` any more — every plan item names its own campaign.
 
 `N8N_WEBHOOK_SECRET` must be identical on both sides. The HMAC is verified over
 the exact request body, so a mismatched pair fails **every** delivery with
@@ -223,7 +231,10 @@ pnpm campaign:create --workspace "<slug>" --name "..."
 pnpm product:create  --workspace "<slug>" --name "..." --value-prop "..."
 ```
 
-Put the campaign id in `SORA_CAMPAIGN_ID` for the n8n container.
+The campaign id goes **nowhere** — not into n8n, not into an environment
+variable. Give the campaign a `campaigns.target` instead (ADR 0001 §1) and the
+plan endpoint starts including it in the daily sweep on its own. That is the
+whole onboarding step for a new client.
 
 The product is the real offer, not the `[DUMMY]` one in `data-riil` (known issue
 21). Nothing may be sent quoting a price that does not exist.
@@ -237,7 +248,16 @@ The product is the real offer, not the `[DUMMY]` one in `data-riil` (known issue
 4. Open Prospek. It should paginate and state a real total.
 5. Download the CSV and open it in Excel: semicolons split into columns, ratings
    read as numbers, `+62` numbers intact.
-6. Run one n8n search and confirm SORA answers `accepted`, not `invalid_signature`.
+6. Run the n8n workflow once. Two things must hold, in this order: **Get Plan**
+   returns items rather than `401 invalid_signature` — that proves
+   `SORA_PLAN_URL` and the shared secret are both right — and then **Send to
+   SORA** answers `accepted`. A plan that returns `item_count: 0` with entries
+   in `skipped` is not a failure: it means every campaign was already planned
+   today, out of budget, or has no `target` yet. Read the reason before
+   debugging anything.
+7. Check `scrape_cursors` moved: `position` should have advanced by exactly the
+   number of items the plan issued. If items came back but the cursor did not
+   move, the plan was a replay of one already issued today.
 
 ---
 
