@@ -386,7 +386,9 @@ export const ACTIVITY_TYPES = [
   { type: 'lead_created', actor: 'system', channel: null },
   { type: 'company_enriched', actor: 'ai', channel: null },
   { type: 'lead_scored', actor: 'ai', channel: null },
-  { type: 'draft_generated', actor: 'ai', channel: 'email' },
+  // Must stay in step with the ActivityType union in src/lib/crm/activity.ts:
+  // the demo timeline and a real run have to name the same event the same way.
+  { type: 'message_drafted', actor: 'ai', channel: 'email' },
   { type: 'draft_approved', actor: 'human', channel: 'email' },
   { type: 'message_sent', actor: 'system', channel: 'email' },
   { type: 'message_opened', actor: 'system', channel: 'email' },

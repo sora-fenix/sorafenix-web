@@ -213,7 +213,7 @@ export const ACTIVITY_TYPE_LABELS: Record<string, string> = {
   lead_created: 'Prospek dibuat',
   company_enriched: 'Data perusahaan diperkaya',
   lead_scored: 'Prospek dinilai',
-  draft_generated: 'Draf dibuat AI',
+  message_drafted: 'Draf dibuat AI',
   draft_approved: 'Draf disetujui',
   message_sent: 'Pesan terkirim',
   message_opened: 'Pesan dibuka',

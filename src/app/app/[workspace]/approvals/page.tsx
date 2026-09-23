@@ -106,8 +106,9 @@ export default async function ApprovalsPage({ params, searchParams }: PageProps)
       </ul>
 
       <p className="text-muted-foreground/80 mt-4 text-xs">
-        Tombol setujui dan tolak menyusul bersama Modul 5. Sampai saat itu layar
-        ini hanya menampilkan antrean — tidak ada jalur kirim otomatis.
+        Draf di sini ditulis AI dan menunggu orang. Tombol setujui dan tolak
+        menyusul bersama jalur pengiriman di Modul 6/7. Sampai saat itu layar ini
+        hanya menampilkan antrean — tidak ada jalur kirim otomatis.
       </p>
       <Pagination page={page} basePath={basePath} noun="draf" />
 
