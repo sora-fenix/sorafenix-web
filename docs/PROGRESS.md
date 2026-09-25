@@ -2112,6 +2112,84 @@ Gates: `typecheck` clean, `lint` clean, `test` 528 in 15 files,
 
 ---
 
+## SORA is live (2026-09-25)
+
+`https://sora-fenix.vercel.app` — Vercel (`sin1`) in front of Supabase cloud
+(Singapore). Anyone can request a magic link, sign in, and create a workspace.
+No paid tier, no billing, no quota: the free-for-everyone shape the owner asked
+for.
+
+This closes known issue 24. `docs/DEPLOY.md` had been written from the code on
+2026-09-16 and never run; running it is what turned it from a plausible document
+into a tested one.
+
+### What the guide got wrong, and what executing it taught
+
+Three of its instructions had drifted since it was written (18 migrations, not
+11; `SORA_PLAN_URL` unmentioned; `SORA_CAMPAIGN_ID` no longer exists), and those
+were corrected before the attempt. Four more only surfaced by doing it, and are
+now §3d of the guide:
+
+1. **Supabase renamed its keys.** The dashboard hands you
+   `SUPABASE_PUBLISHABLE_KEY` and `SUPABASE_SECRET_KEY`; the code wants
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`. Same values,
+   old names. Pasting the dashboard block verbatim fails the build.
+2. **A missing `NEXT_PUBLIC_*` reports as `Failed to collect page data for
+   /auth/callback`** — naming neither the variable nor the cause, because
+   `publicEnv` is a module-scope const evaluated when `next build` loads the
+   route. The real message sits far above in the log. Rule 1 working exactly as
+   designed, with a symptom that points at the wrong thing.
+3. **Supabase silently overrides a non-allowlisted redirect with its Site URL.**
+   The magic link arrived pointing at the Vercel *team alias* with no
+   `/auth/callback` path — and that host is behind Vercel's own login wall, so
+   the symptom read as "SORA requires a Vercel account".
+4. **`&` in the database password truncates `DATABASE_URL`.** It has to be
+   `%26`.
+
+### The migration, and the fallback that was needed
+
+`pnpm db:migrate` could not reach Supabase from this environment — outbound TCP
+on 5432 times out, while HTTPS is fine. The fallback: concatenate all 18
+migrations in journal order, append the `drizzle.__drizzle_migrations`
+bookkeeping rows with hashes copied from the local database, wrap in one
+transaction, paste once into the SQL Editor. Verified first on a throwaway
+database with an `auth` stand-in — schema identical to local across all 362
+snapshot lines — then dropped.
+
+Production verified afterwards: **18 migrations · 16 tables · 21 policies ·
+`rls_off` = 0**. That last number is the one that mattered: not one table in
+production is missing RLS, so the tenant isolation proved by 192 integration
+tests holds on the deployed database too.
+
+### Three secrets to rotate, and why
+
+All three passed through a chat transcript during setup. None is an emergency —
+there is no user data yet — and all three are two-minute jobs that get harder to
+remember later:
+
+| Secret | Where | Blast radius if leaked |
+|---|---|---|
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Settings → API Keys | **Bypasses RLS entirely.** Read/write on every tenant's data. |
+| Database password | Supabase → Settings → Database | Same, by another door. Update `DATABASE_URL` in Vercel after. |
+| `N8N_WEBHOOK_SECRET` | generate new | Forged webhooks: fake leads, and plan requests that spend Serper credits. Update Vercel **and** `.env.local`, then recreate n8n. |
+
+Known issue 15's rotation is folded into the third: that value had leaked into
+1208 `companies.raw` rows before migration 0008 scrubbed the database, and was
+never rotated. It must not become production's.
+
+### What is live, and what is not
+
+Live: sign-up, workspace creation, and every read-only screen. The database is
+empty — no seed was run against production, deliberately.
+
+Not live: n8n still points at the laptop (`SORA_WEBHOOK_URL` and
+`SORA_PLAN_URL` in `docker-compose.n8n.yml`), so nothing sweeps into production
+yet. And `GOOGLE_GENERATIVE_AI_API_KEY` is unset there, so scoring and drafting
+are unavailable — deliberate, given known issue 8 says the free tier is not a
+production data path.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
@@ -2369,11 +2447,10 @@ setup in `docs/n8n-integration.md`.
    every skipped row, so page 500 of a large table is measurably worse than page 1.
    Invisible at 1208 rows; the fix, when it is needed, is keyset pagination on
    `(score, id)`, which the tiebreaker already makes possible.
-24. **`docs/DEPLOY.md` has never been executed.** It is derived from the code, not
-   from a successful deploy, so the first real run is also its first test. Two
-   places are most likely to be wrong: the exact shape of Supabase's pooled
-   connection string, and whether `regions: ["sin1"]` is accepted on the plan in
-   use. Corrections belong in that file.
+24. ~~**`docs/DEPLOY.md` has never been executed.**~~ **Closed 2026-09-25** — it
+   was, and SORA is live at `https://sora-fenix.vercel.app`. Executing it found
+   four gaps the guide could not have known while it was only derived from code;
+   they are written into its new §3d. See the deployment section above.
 25. **`drizzle.ts` opens up to 10 connections per instance.** Fine on one laptop;
    a different shape once serverless functions scale out behind the pooler. Lower
    `max` before it matters, not after.

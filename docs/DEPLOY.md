@@ -261,6 +261,72 @@ The product is the real offer, not the `[DUMMY]` one in `data-riil` (known issue
 
 ---
 
+## 3d. What actually bit, on the first real run (2026-09-25)
+
+This guide was written from the code on 2026-09-16 and executed for the first
+time on 2026-09-25. Four things cost real time, and none of them were in it.
+
+**Supabase renamed the keys, and the dashboard's names are not the code's.**
+Copying the block Supabase offers verbatim gives you `SUPABASE_URL`,
+`SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` and `SUPABASE_JWKS_URL`. The
+app wants:
+
+| Supabase calls it | Set it in Vercel as | Note |
+|---|---|---|
+| `SUPABASE_URL` | `NEXT_PUBLIC_SUPABASE_URL` | the `NEXT_PUBLIC_` prefix is what bakes it into the browser bundle |
+| `SUPABASE_PUBLISHABLE_KEY` | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | same value, old name |
+| `SUPABASE_SECRET_KEY` | `SUPABASE_SERVICE_ROLE_KEY` | same value, old name |
+| `SUPABASE_JWKS_URL` | — | unused; `env.ts` knows nothing about it |
+
+Renaming in Vercel means **delete and re-create**. Editing a variable changes its
+value, not its name.
+
+**A missing `NEXT_PUBLIC_*` fails the build as `Failed to collect page data for
+/auth/callback`,** which names neither the variable nor the cause. `publicEnv` in
+`src/lib/env.ts` is a module-scope const, so it is evaluated the moment any route
+importing it is loaded — and `next build` loads every route. The real message is
+printed far above that line:
+
+```
+Invalid public environment variables:
+  - NEXT_PUBLIC_SUPABASE_ANON_KEY: NEXT_PUBLIC_SUPABASE_ANON_KEY is required
+```
+
+Search the build log for `Invalid public environment variables` rather than
+reading the stack trace at the bottom.
+
+**Supabase's Site URL silently overrides a redirect that is not allowlisted.**
+Symptom: the magic link works, but the email's link points somewhere else
+entirely — in our case `https://<project>-<team>.vercel.app/`, with no
+`/auth/callback` path, and that host is behind Vercel's own login wall. Supabase
+does not report the rejection; it falls back to Site URL. Both fields must be set
+under **Authentication → URL Configuration**:
+
+- **Site URL**: `https://your-app.vercel.app`
+- **Redirect URLs**: `https://your-app.vercel.app/**`
+
+The wildcard matters: the callback carries `?next=/app`.
+
+**Special characters in the database password must be percent-encoded** in
+`DATABASE_URL`. A `&` is a query separator and truncates the string inside the
+driver; `LM!Cn&hFJ...` has to be written `LM!Cn%26hFJ...`. The failure is
+`ERR_INVALID_URL` or a connection that silently uses the wrong credentials.
+
+### If `pnpm db:migrate` cannot reach the database at all
+
+Some networks block outbound TCP on 5432/6543 while allowing HTTPS. The fallback
+that works everywhere: concatenate every file in `drizzle/` in journal order into
+one script, append the `drizzle.__drizzle_migrations` bookkeeping rows (hash and
+`created_at` copied from a database where the chain is already applied), wrap it
+in `begin; ... commit;`, and paste it once into the Supabase SQL Editor.
+
+Verify it on a throwaway database first — `create database`, add a stand-in for
+`auth.users` and `auth.uid()`, apply, compare the schema, drop it. None of the
+18 migrations contains a statement that cannot run inside a transaction, so the
+wrapper is safe and an error leaves nothing behind.
+
+---
+
 ## 4. Things that will bite later
 
 - **Connection pool.** `drizzle.ts` opens up to 10 connections per instance. One
