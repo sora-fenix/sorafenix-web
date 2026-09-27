@@ -32,7 +32,10 @@
     "wa:send": "tsx --conditions=react-server scripts/wa-send.ts",
     "n8n:start": "docker compose --env-file .env.local -f docker-compose.n8n.yml up -d",
     "n8n:stop": "docker compose --env-file .env.local -f docker-compose.n8n.yml down",
-    "n8n:logs": "docker compose --env-file .env.local -f docker-compose.n8n.yml logs -f n8n"
+    "n8n:logs": "docker compose --env-file .env.local -f docker-compose.n8n.yml logs -f n8n",
+    "waha:start": "docker compose --env-file .env.local -f docker-compose.waha.yml up -d",
+    "waha:stop": "docker compose --env-file .env.local -f docker-compose.waha.yml down",
+    "waha:logs": "docker compose --env-file .env.local -f docker-compose.waha.yml logs -f waha"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.63",

@@ -1,0 +1,73 @@
+# WAHA — the development WhatsApp transport (`src/lib/outreach/whatsapp.ts`).
+#
+#   pnpm waha:start   →  http://localhost:3001  (dashboard + REST API)
+#   pnpm waha:logs
+#   pnpm waha:stop
+#
+# Always started through the pnpm scripts, because they pass
+# `--env-file .env.local`. Two values MUST match what the app uses, and reading
+# them from the same file the app reads is the only way to guarantee that:
+#
+#   WAHA_API_KEY               the app sends it as `X-Api-Key` on every send
+#   WAHA_WEBHOOK_HMAC_SECRET   WAHA signs inbound webhooks with it; the route
+#                              refuses anything that does not verify
+#
+# A second copy of either drifts, and a drifted secret looks exactly like a
+# malformed request — the send fails with 401, or every inbound reply is refused
+# and silently dropped.
+#
+# WAHA IS FOR DEVELOPMENT AND DEMOS, NOT PRODUCTION (PROGRESS decision 80). It
+# drives WhatsApp Web with a real account, so the account carries the ban risk,
+# and cold outbound to scraped numbers is the pattern WhatsApp bans for. In a
+# multi-tenant product the banned number would be the CLIENT's business number.
+# Production is the Cloud API, behind the same `WhatsAppTransport` seam.
+#
+# Separate stack from Supabase (`pnpm db:start`) and from n8n (`pnpm n8n:start`).
+# WAHA keeps its session inside its own volume and never touches the
+# application's Postgres.
+
+name: sora-waha
+
+services:
+  waha:
+    image: devlikeapro/waha:2025.9.3
+    container_name: sora_waha
+    restart: unless-stopped
+    ports:
+      # 3001, because `pnpm dev` owns 3000.
+      - '3001:3000'
+    environment:
+      # Required on every REST call as `X-Api-Key`. Without it the API — and the
+      # dashboard, and the QR code — are open to anything that can reach the port.
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env.local}
+
+      # Where WAHA posts inbound events. `pnpm dev` runs on the host, not in this
+      # network; `host.docker.internal` is what reaches it, the same way n8n does.
+      WHATSAPP_HOOK_URL: http://host.docker.internal:3000/api/webhooks/whatsapp
+      # `message` is an inbound reply. `message.ack` is delivery/read on our own
+      # outbound. Nothing else is handled, and the route answers 200 to the rest.
+      WHATSAPP_HOOK_EVENTS: message,message.ack
+      # Signs the RAW body with HMAC-SHA512 into `X-Webhook-Hmac`. The route
+      # verifies it before parsing, and refuses with 401 when this is unset on
+      # either side — an unconfigured secret means nothing is accepted, never
+      # everything.
+      WHATSAPP_HOOK_HMAC_KEY: ${WAHA_WEBHOOK_HMAC_SECRET:?set WAHA_WEBHOOK_HMAC_SECRET in .env.local}
+
+      # Bring the saved session back up after a restart, so the QR is scanned
+      # once rather than every time the container cycles.
+      WHATSAPP_RESTART_ALL_SESSIONS: 'true'
+
+      # The session name is the tenant key (PROGRESS decision 81): SORA resolves
+      # the workspace from it via `integrations.meta.session`, and migration 0018
+      # makes two workspaces unable to share one. Keep this equal to whatever
+      # `pnpm wa:connect --session` registered.
+      WHATSAPP_DEFAULT_ENGINE: WEBJS
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      # The authenticated WhatsApp session. Lose this and the QR has to be
+      # scanned again; it holds no application data.
+      - waha_sessions:/app/.sessions
+
+volumes:
+  waha_sessions:
