@@ -11,6 +11,14 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/integration/**/*.test.ts'],
+    // The WAHA webhook secret the suite signs its own requests with. A throwaway
+    // value, the way `vitest.config.ts` gives the unit suite its NEXT_PUBLIC_*: the
+    // inbound route refuses everything when the secret is unset, and requiring a
+    // developer to put one in .env.local before `pnpm test:integration` passes would
+    // make the suite fail for a reason that has nothing to do with the code.
+    env: {
+      WAHA_WEBHOOK_HMAC_SECRET: 'integration-suite-waha-hmac-secret-0123456789',
+    },
     // Seeding rebuilds a shared workspace; parallel files would race on it.
     fileParallelism: false,
     testTimeout: 60_000,

@@ -28,6 +28,8 @@
     "workspace:create": "tsx scripts/create-workspace.ts",
     "campaign:create": "tsx scripts/create-campaign.ts",
     "product:create": "tsx scripts/create-product.ts",
+    "wa:connect": "tsx scripts/connect-whatsapp.ts",
+    "wa:send": "tsx --conditions=react-server scripts/wa-send.ts",
     "n8n:start": "docker compose --env-file .env.local -f docker-compose.n8n.yml up -d",
     "n8n:stop": "docker compose --env-file .env.local -f docker-compose.n8n.yml down",
     "n8n:logs": "docker compose --env-file .env.local -f docker-compose.n8n.yml logs -f n8n"

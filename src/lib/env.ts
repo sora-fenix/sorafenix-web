@@ -65,6 +65,16 @@ export const serverEnvSchema = z.object({
   WHATSAPP_VERIFY_TOKEN: z.string().min(1).optional(),
   WHATSAPP_APP_SECRET: z.string().min(1).optional(),
 
+  // WAHA — the development WhatsApp transport (lib/outreach/whatsapp.ts). The
+  // Cloud API variables above are the production one and are a later slice; both
+  // sets are declared here because either may be the connected provider.
+  WAHA_BASE_URL: z.url({ protocol: HTTP_PROTOCOL }).optional(),
+  WAHA_API_KEY: z.string().min(1).optional(),
+  WAHA_WEBHOOK_HMAC_SECRET: z
+    .string()
+    .min(32, 'WAHA_WEBHOOK_HMAC_SECRET must be at least 32 characters')
+    .optional(),
+
   SERPER_API_KEY: z.string().min(1).optional(),
 })
 

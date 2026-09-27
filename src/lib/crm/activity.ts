@@ -23,6 +23,8 @@ export type ActivityType =
   | 'lead_created'
   | 'lead_scored'
   | 'message_drafted'
+  | 'message_sent'
+  | 'message_failed'
   | 'status_changed'
   | 'owner_changed'
 

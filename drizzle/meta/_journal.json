@@ -127,6 +127,13 @@
       "when": 1790134798209,
       "tag": "0017_data_riil_search_target",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790134799209,
+      "tag": "0018_one_waha_session_per_workspace",
+      "breakpoints": true
     }
   ]
 }

@@ -37,9 +37,9 @@ button, because a model call takes 5–37 seconds (known issue 4 and 9).
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 528 tests, 15 files |
+| `pnpm test` | ✅ 582 tests, 18 files |
 | `pnpm build` | ✅ all 19 routes built |
-| `pnpm test:integration` | ✅ 192 tests, 12 files |
+| `pnpm test:integration` | ✅ 231 tests, 13 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -2190,6 +2190,148 @@ production data path.
 
 ---
 
+## WhatsApp: one working pipe, both directions (2026-09-27)
+
+Transport plumbing for the **Contact** link, and the inbound half that reply
+handling will need. Not classification, not drafting, not a UI. `sendMessage()`'s
+email branch returns `channel_not_implemented` and touches nothing.
+
+| File | Role |
+|---|---|
+| `src/lib/outreach/whatsapp.ts` | `WhatsAppTransport` seam + WAHA adapter. Pure. |
+| `src/lib/outreach/send.ts` | SPEC §6 entry point. Guard first, always. |
+| `src/lib/outreach/whatsapp-inbound.ts` | session → workspace → contact, then store |
+| `src/lib/outreach/whatsapp-account.ts` | the session lookup |
+| `src/app/api/webhooks/whatsapp/route.ts` | raw body → sha512 HMAC → Zod |
+| `drizzle/0018_one_waha_session_per_workspace.sql` | the index that makes the tenant key safe |
+
+New optional env: `WAHA_BASE_URL`, `WAHA_API_KEY`, `WAHA_WEBHOOK_HMAC_SECRET`.
+Scripts: `pnpm wa:connect`, `pnpm wa:send`.
+
+### WAHA is the development transport. Cloud API is production.
+
+The seam is pluggable because the choice is not free. WAHA drives WhatsApp Web
+with a real account, and cold outbound to scraped numbers at volume is precisely
+what WhatsApp bans for — so the ban lands on **the client's own business
+number**, the one on their receipts and their Maps listing. And
+`.claude/rules/outreach.md` mandates "template messages only outside the 24-hour
+customer service window", a rule the Cloud API *enforces* and WAHA cannot: with
+WAHA the guard would be checking a rule the transport does not back, which turns
+a control into a comment.
+
+So WAHA gets us a working feature this week; production gets the Cloud API, as a
+separate slice, because template handling is where a ban becomes expensive.
+
+### The session name is the tenant key. Never the phone number.
+
+Each workspace's `integrations` row (`provider: 'whatsapp'`, `meta.session`)
+names the session it owns. The webhook resolves the workspace **by session**, and
+only inside that resolved workspace is the sender's number matched against
+`contacts.whatsapp` / `contacts.phone`. A number present in two workspaces is
+never used to choose between them.
+
+`0018` puts a partial unique index on `(meta->>'session') where provider =
+'whatsapp' and meta->>'session' is not null`, so two workspaces *cannot* register
+the same session. The ambiguity is closed in the schema rather than in care.
+
+Review confirmed the shape: the session lookup is the one query in the slice
+without a `workspace_id` filter, and it is the query that establishes one. Every
+query downstream filters it. A forged `session` — which needs the instance HMAC
+secret — can write a bogus inbound row into the workspace that owns that session
+and nowhere else.
+
+### The inbound path is incapable of suppressing anyone
+
+An unauthenticated-ish inbound endpoint that can write `suppressions` is a way to
+silence a client's entire contact list, and whoever reaches it chooses the text.
+So auto-suppression on "STOP" belongs to the classification slice, and this path
+is **structurally unable** to do it: `tests/unit/whatsapp-inbound-capability.test.ts`
+reads the four inbound files with comments stripped and fails on any mention of
+suppression, any write outside `messages`/`webhook_events`, any reference to the
+send path, any model import, and any import outside an allowlist.
+
+A behavioural test proves a thing happened; it cannot prove an absence. This can.
+
+**Its first version had three bypasses, all found in review and all closed:** a
+dynamic `import('…')` slipped the regex entirely (the auto-reply hole, through the
+very test whose header says it prevents auto-reply); `/suppression/i` did not
+match a helper named `suppressContact` in a module named `suppress`; and the
+write pattern missed `delete(...)` and raw `execute(sql\`...\`)` — which needs no
+new import, since `db` and `sql` are already allowlisted. Each closure was
+re-verified by injecting the violation and watching it fail.
+
+### The defect that mattered most was in code this slice did not write
+
+`send-context.ts` feeds the send guard. Two of its queries treated `queued` as
+"in flight, count it":
+
+```sql
+count(*) filter (where sent_at >= dayStart or status = 'queued')   -- no date bound
+max(case when status = 'queued' then now() else sent_at end)       -- always "just now"
+```
+
+A row stuck at `queued` has `sent_at IS NULL`, so the first branch is false and
+the second is true **every day, forever**. The consequences were not cosmetic:
+
+- `daily_wa_limit` stuck rows — 100 by default — reject every WhatsApp send in
+  that workspace permanently, with a `retryAt` of the next midnight that can
+  never help.
+- **One** stuck row makes that contact uncontactable on *every* channel forever,
+  behind a rejection promising "try again in 24 hours" that never comes true.
+
+Both queries predate this slice. What this slice added is the first code that
+ever writes `queued` at runtime — which is what made the trap reachable. And the
+seed proved it concretely rather than theoretically: `maju-bersama` carries three
+`queued` rows aged 9, 13 and 18 days, so that workspace was **already** down
+three quota slots with three permanently uncontactable contacts.
+
+Both branches are now bounded by `updated_at`, the moment `send.ts` took the
+claim. That also brings the code back in line with what SPEC §6a already said the
+check does — "sent or queued **today**". The fix enforces the existing spec
+rather than inventing a rule.
+
+**The general lesson, worth carrying forward:** an enum value that exists in the
+schema but has never been written at runtime is an untested assumption, not a
+working feature. Still in that category: `messages.status`'s `opened` and
+`replied`, and the whole of `sequence_runs.state`. Each waits for the slice that
+writes it first.
+
+### `outcome_unknown`, and why a lost send stays `queued`
+
+The claim (`approved → queued`) must happen before the provider call, or two
+concurrent sends both go out. The provider call is not transactional. So a
+failure between them leaves a genuinely unknown outcome, and that is inherent
+rather than sloppy.
+
+The row stays at `queued`, **not** `failed`, deliberately: `failed` is an
+invitation to resend something a customer may have already read. `sendMessage`
+returns `outcome_unknown` and `pnpm wa:send` prints "MAY have been delivered —
+check WAHA's own message list before resending".
+
+**There is no requeue path.** It no longer spreads, but nothing resolves it
+either; that needs the provider's message list and belongs to the queue slice.
+
+### Assumptions, stated plainly
+
+**Nothing here has been verified against a live WAHA instance.** The adapter is
+proved against an injected fake, the pattern `draft.ts` uses for the model. So the
+request shape WAHA actually accepts, its `message.ack` codes, and its
+`/api/sendText` response shape are all unconfirmed — the contract came from WAHA's
+documentation, not from a running bridge.
+
+Because that response shape is unknown, an unreadable success body is treated as
+**sent with `provider_message_id: null`** rather than a failure — the message is
+already on its way, and reporting failure invites a duplicate. The cost is real
+and now recorded where a human can act on it: an ack matches on
+`provider_message_id`, so a null id never matches and the row is frozen at `sent`
+for good. The HTTP status and a truncated body go into the `message_sent`
+activity payload as the only reconciliation handle there is.
+
+Gates: `typecheck` clean, `lint` clean, `test` 582 in 18 files,
+`test:integration` 231 in 13 files.
+
+---
+
 ## Next up
 
 Recommended order. One vertical slice at a time (schema → server logic → API →
@@ -2555,6 +2697,12 @@ setup in `docs/n8n-integration.md`.
 | 78 | The detector is narrow by design, and its holes are written into the module header rather than closed | Entailment-matching arbitrary prose against a knowledge base is a research problem, and a bad approximation either flags every draft or lulls the reviewer into trusting it. So it catches only what SPEC §5 names and a salesperson cannot check at a glance: money, discounts, percentages, numeric delivery commitments. The holes that remain were **measured, not guessed**, and are listed in the file — because a known hole is a decision while an unknown one is a trap, and the 2026-09-23 review proved that in the sharpest way: the header's reassurance that "only `Rp` and `IDR` are recognised" had read as "rupiah is covered" when in fact every rupiah price written without the marker evaded entirely. |
 
 | 79 | Insforge reconsidered on 2026-09-23 and **deferred again** — Supabase ships the first deploy, with a stated trigger for revisiting | Raised by the owner's manager. The argument against switching now is not that Insforge is worse; it is that the schema is portable and the identity is not. Measured the same day: all 18 migrations apply cleanly to a bare Postgres, but only after hand-building a stand-in for `auth.users` and `auth.uid()` — and that stand-in is precisely the work a switch requires, except real. **21** RLS policies rest on that one function, and the **192** integration tests that prove tenant isolation all exercise it; swapping the identity mechanism returns every one of those proofs to the unproven column, for a product whose entire value is that one client cannot see another's data. Timing decides it: `docs/DEPLOY.md` has never been executed, so the deploy already carries one unproven variable, and migrating the platform in the same move means a failure cannot be attributed to either. Deferring costs nothing — the auth rewrite is the same price in six months, and by then there is a running system to verify against. **Revisit if** any of these turns out true: Insforge offers an Indonesian region and Supabase does not (UU PDP 27/2022 is a legal obligation, not a preference, and outweighs everything above), a real cost calculation shows Supabase expensive at a known client count, or the company standardises on Insforge elsewhere. The case was written up for the manager as a one-page memo. |
+
+| 80 | WAHA is the **development** WhatsApp transport; WhatsApp Cloud API is production, behind a pluggable seam | Owner decision, 2026-09-27, after raising WAHA as the plan. WAHA drives WhatsApp Web with a real account, and cold outbound to scraped numbers at volume is exactly the pattern WhatsApp bans for — so the ban lands on the *client's* business number, the one on their receipts and their Maps listing, which is not a failure you can apologise for. Separately, `.claude/rules/outreach.md` mandates template-only messaging outside the 24-hour window, a rule the Cloud API enforces and WAHA structurally cannot; with WAHA the send guard would be checking a rule the transport does not back, turning a control into a comment. Building against a seam rather than a provider means the feature ships this week and the swap is configuration, not a rewrite — the same reasoning as decision 79 on Insforge: keep the expensive decision cheap to reverse. |
+| 81 | Inbound WhatsApp is attributed by **WAHA session name**, never by phone number, and `0018` makes a session unshareable | The webhook hands you a number and nothing else, and a number can exist in two workspaces — so using it to choose a tenant is a cross-tenant write waiting to happen. The session is owned by exactly one workspace via `integrations.meta.session`, so it resolves the tenant on its own; the number is then matched only *inside* that workspace. A partial unique index enforces the one-session-one-workspace premise in the schema rather than relying on whoever runs `wa:connect` next being careful. The session lookup is consequently the only query in the slice without a `workspace_id` filter, which is correct: it is the query that establishes one. |
+| 82 | A `queued` row counts against quota and cooldown only for the day it was **claimed**, not forever | Fixing a live poisoning, found in review 2026-09-27. `countSentToday` counted `status='queued'` with no date bound and `findLastSentToContact` read a queued row as sent `now()`, so one lost send permanently consumed a quota slot and made that contact uncontactable on every channel, behind a rejection promising a retry that could never arrive. Both are now bounded by `updated_at`, the claim moment — which is also what SPEC §6a already said the check does ("sent or queued **today**"), so this enforces the existing spec rather than adding a rule. The queries predate the slice; the slice is simply the first code that ever writes `queued` at runtime. **The generalisable half:** an enum value present in the schema but never written at runtime is an untested assumption, and `messages.status`'s `opened`/`replied` plus all of `sequence_runs.state` are still in that category. |
+| 83 | A send whose outcome is unknown stays `queued`, never `failed` | The claim must precede the provider call or two concurrent sends both go out, and the provider call is not transactional, so a failure between them leaves a genuinely unknown outcome. `failed` reads as "safe to retry", and retrying a message a customer may already have read is the worse error — so `sendMessage` returns `outcome_unknown` and the row stays claimed. The cost is accepted and named: there is no requeue path, and resolving one needs the provider's own message list, which is the queue slice. |
+| 84 | A capability claim about the inbound path is proved by a **static source scan**, not only by behaviour | `tests/unit/whatsapp-inbound-capability.test.ts` reads the four inbound files and fails on any mention of suppression, any write outside `messages`/`webhook_events`, any reference to the send path, and any import off an allowlist. A behavioural test shows a thing did not happen on one input; it cannot show the code is unable to do it at all — and "unable" is the actual requirement, because a path from one forged webhook to `suppressions` silences a client's whole contact list. Kept in the unit suite because it needs no database, network or env, so it runs in the gate everybody runs. Its first version had three bypasses (dynamic `import()`, a `suppress` helper not containing the string "suppression", and `delete`/raw `execute`), all found in review and closed with each closure re-verified by injecting the violation — a static guard nobody has watched fail is decoration. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
