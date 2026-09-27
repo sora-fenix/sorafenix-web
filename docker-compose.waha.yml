@@ -30,7 +30,16 @@ name: sora-waha
 
 services:
   waha:
-    image: devlikeapro/waha:2025.9.3
+    # Pinned, like n8n: `latest` drifts, and a transport that changes behaviour
+    # without a diff is a transport nobody can debug. `latest-*` is the WEBJS
+    # build (bundles Chromium) that WHATSAPP_DEFAULT_ENGINE below expects; the
+    # `noweb-*` and `gows-*` tags are the lighter websocket engines.
+    #
+    # This is WAHA **Core**, the free image. It is enough for one session, which
+    # is all development needs. Core's session limit is worth checking before
+    # anyone points a second tenant at the same instance — the session name is
+    # our tenant key (decision 81), so more tenants means more sessions.
+    image: devlikeapro/waha:latest-2026.9.1
     container_name: sora_waha
     restart: unless-stopped
     ports:
