@@ -50,6 +50,21 @@ services:
       # dashboard, and the QR code — are open to anything that can reach the port.
       WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env.local}
 
+      # The dashboard has its own login, separate from the API key, and its
+      # default is `waha` / `waha` — on a page that shows the pairing QR and can
+      # unlink the session. Left at the default, anything that reaches this port
+      # can take over the connected WhatsApp account.
+      #
+      # The password is deliberately WAHA_API_KEY rather than a fourth secret to
+      # generate: whoever holds the API key can already do everything the
+      # dashboard can, through the REST API. A separate password would guard
+      # nothing additional and would only be one more value to lose.
+      WAHA_DASHBOARD_USERNAME: sora
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_API_KEY:?set WAHA_API_KEY in .env.local}
+      # Same reasoning for the Swagger panel, which is the same API behind a form.
+      WHATSAPP_SWAGGER_USERNAME: sora
+      WHATSAPP_SWAGGER_PASSWORD: ${WAHA_API_KEY:?set WAHA_API_KEY in .env.local}
+
       # Where WAHA posts inbound events. `pnpm dev` runs on the host, not in this
       # network; `host.docker.internal` is what reaches it, the same way n8n does.
       WHATSAPP_HOOK_URL: http://host.docker.internal:3000/api/webhooks/whatsapp
