@@ -29,6 +29,8 @@ const NOW = new Date('2026-09-14T03:00:00Z')
 const TODAY_EARLIER = new Date('2026-09-14T02:00:00Z')
 const YESTERDAY_LATE = new Date('2026-09-13T16:00:00Z')
 const SUNDAY_10_WIB = new Date('2026-09-20T03:00:00Z')
+/** Saturday 2026-09-12, 10:00 WIB — two days before NOW, so any 24h window has passed. */
+const TWO_DAYS_BEFORE = new Date('2026-09-12T03:00:00Z')
 
 const WA = '+6281234567890'
 
@@ -80,13 +82,17 @@ async function makeMessage(options: {
   templateId?: string | null
   subject?: string | null
   sentAt?: Date | null
+  /** When a `queued` row took its claim. Both queued branches are bounded by it. */
+  updatedAt?: Date
 }): Promise<string> {
   const [row] = await sql<{ id: string }[]>`
-    insert into messages (workspace_id, lead_id, channel, direction, status, template_id, subject, sent_at)
+    insert into messages (workspace_id, lead_id, channel, direction, status, template_id, subject,
+                          sent_at, updated_at)
     values (${options.workspace ?? workspaceId}, ${options.leadId}, ${options.channel ?? 'whatsapp'},
             ${options.direction ?? 'out'}, ${options.status ?? 'approved'},
             ${options.templateId === undefined ? 'sapaan_pertama' : options.templateId},
-            ${options.subject ?? null}, ${options.sentAt ?? null})
+            ${options.subject ?? null}, ${options.sentAt ?? null},
+            ${options.updatedAt ?? new Date()})
     returning id`
   if (row === undefined) throw new Error('message fixture failed')
   return row.id
@@ -233,11 +239,28 @@ describe('2 · daily_limit', () => {
   it('counts a queued message that has not gone yet', async () => {
     await sql`update workspaces set daily_wa_limit = 1 where id = ${workspaceId}`
     const other = await makeLead({ name: 'Petshop Antre', whatsapp: '+6281111111119' })
-    await makeMessage({ leadId: other.leadId, status: 'queued' })
+    await makeMessage({ leadId: other.leadId, status: 'queued', updatedAt: TODAY_EARLIER })
 
     const { leadId } = await makeLead()
     const messageId = await makeMessage({ leadId })
     expect(await verdict(messageId)).toBe('daily_limit')
+  })
+
+  /**
+   * A row still `queued` from a previous day is a send whose outcome was lost, not one
+   * about to go. It has no `sent_at`, so counting it would count it every day for the
+   * rest of time: 100 of them — the default limit — would reject every WhatsApp send in
+   * the workspace permanently, with a `retryAt` of the next midnight that can never
+   * help. The quota has to heal itself at the workspace's own midnight.
+   */
+  it('stops counting a queued message once the workspace day it was claimed in has ended', async () => {
+    await sql`update workspaces set daily_wa_limit = 1 where id = ${workspaceId}`
+    const other = await makeLead({ name: 'Petshop Macet', whatsapp: '+6281111111117' })
+    await makeMessage({ leadId: other.leadId, status: 'queued', updatedAt: YESTERDAY_LATE })
+
+    const { leadId } = await makeLead()
+    const messageId = await makeMessage({ leadId })
+    expect(await verdict(messageId)).toBe('allowed')
   })
 
   it('does not count the message being judged against itself', async () => {
@@ -282,6 +305,55 @@ describe('3 · cooldown', () => {
     expect(result.error.kind).toBe('cooldown')
     if (result.error.kind !== 'cooldown') return
     expect(result.error.retryAt).toEqual(new Date(TODAY_EARLIER.getTime() + 86_400_000))
+  })
+
+  /**
+   * A queued row occupies the contact's 24 hours from the moment it was CLAIMED, not
+   * from the moment we ask. Reading it as "now" made a lost send permanently recent, so
+   * one of them left a contact uncontactable on every channel forever behind a
+   * rejection that promised a retry time that never arrived.
+   */
+  it('counts a queued message from the time it was claimed', async () => {
+    const { leadId, contactId } = await makeLead()
+    const [second] = await sql<{ id: string }[]>`
+      insert into leads (workspace_id, company_id, contact_id, status)
+      select workspace_id, company_id, id, 'qualified' from contacts where id = ${contactId}
+      returning id`
+    if (second === undefined) throw new Error('second lead fixture failed')
+    await makeMessage({
+      leadId: second.id,
+      status: 'queued',
+      templateId: 'lain',
+      updatedAt: TODAY_EARLIER,
+    })
+
+    const messageId = await makeMessage({ leadId })
+    const result = await guardSend({ workspaceId, messageId, now: NOW })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.kind).toBe('cooldown')
+    if (result.error.kind !== 'cooldown') return
+    // The claim time plus 24h — not the moment of asking plus 24h, which would move
+    // every time anybody asked.
+    expect(result.error.retryAt).toEqual(new Date(TODAY_EARLIER.getTime() + 86_400_000))
+  })
+
+  it('lets the cooldown expire on a message that has been queued for days', async () => {
+    const { leadId, contactId } = await makeLead()
+    const [second] = await sql<{ id: string }[]>`
+      insert into leads (workspace_id, company_id, contact_id, status)
+      select workspace_id, company_id, id, 'qualified' from contacts where id = ${contactId}
+      returning id`
+    if (second === undefined) throw new Error('second lead fixture failed')
+    await makeMessage({
+      leadId: second.id,
+      status: 'queued',
+      templateId: 'lain',
+      updatedAt: TWO_DAYS_BEFORE,
+    })
+
+    const messageId = await makeMessage({ leadId })
+    expect(await verdict(messageId)).toBe('allowed')
   })
 
   it('ignores an inbound message — a reply is not something we sent', async () => {

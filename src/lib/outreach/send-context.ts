@@ -141,7 +141,7 @@ export async function loadSendContext(
     await Promise.all([
       findSuppressions(workspaceId, suppressionKeysFor(recipient, row.companyDomain)),
       countSentToday(workspaceId, messageId, row.channel, row.timezone, now),
-      findLastSentToContact(workspaceId, messageId, row.leadId, row.contactId, now),
+      findLastSentToContact(workspaceId, messageId, row.leadId, row.contactId),
       row.campaignId === null
         ? Promise.resolve(null)
         : findDuplicate(workspaceId, {
@@ -204,6 +204,21 @@ async function findSuppressions(
  * A queued message counts even though it has no `sent_at` yet — it is committed to
  * go, and not counting it is how a burst of approvals sails past the limit. The
  * message being judged is excluded, or a queued message would count against itself.
+ *
+ * BUT ONLY A ROW QUEUED TODAY. `queued` is a claim taken by `send.ts` immediately
+ * before it calls the provider, so a row still sitting there tomorrow is not
+ * "committed to go" — it is a send whose outcome was lost (the process died between
+ * the transport call and the update). Counting those forever is how a workspace
+ * poisons itself: `sent_at` stays null, so the first branch below is false for the
+ * rest of time, and `daily_wa_limit` stuck rows — 100 by default — reject every
+ * WhatsApp send in the workspace permanently, with a `retryAt` of the next midnight
+ * that can never help. Bounding it by `updated_at`, which is when the claim was
+ * taken, makes the quota self-heal at the workspace's own midnight.
+ *
+ * That is also what SPEC §6a already says the check does: "sent or queued TODAY".
+ * The cost of the bound is that a genuinely stuck row stops holding a slot it was
+ * never going to use, which is the direction to be wrong in — a quota is per day,
+ * and a claim from last Tuesday does not belong to today's.
  */
 async function countSentToday(
   workspaceId: string,
@@ -224,7 +239,8 @@ async function countSentToday(
     .select({
       sentToday: sql<number>`count(*) filter (
         where ${schema.messages.sentAt} >= ${dayStart}
-           or ${schema.messages.status} = 'queued'
+           or (${schema.messages.status} = 'queued'
+               and ${schema.messages.updatedAt} >= ${dayStart})
       )::int`,
       // Epoch seconds rather than `::text`: Postgres renders timestamptz as
       // "2026-09-14 17:00:00+00", a shape `new Date()` is not required to accept.
@@ -256,15 +272,22 @@ async function countSentToday(
  * reachable through two leads is still one person who got a message this morning.
  * With no contact, the lead is the narrowest identity there is.
  *
- * A queued message counts as sent now, for the same reason it counts against the
- * quota.
+ * A queued message counts, for the same reason it counts against the quota — it is
+ * about to land on the same phone.
+ *
+ * It counts as sent WHEN IT WAS QUEUED, not "now". `updated_at` is when `send.ts`
+ * took the claim, moments before it called the provider, so for a live queue this is
+ * the send time to within seconds. Reading it as `now()` instead — which is what this
+ * did — made a stuck row permanently recent: `max(...)` returned the current instant
+ * on every evaluation, so ONE lost send made that contact uncontactable on every
+ * channel forever, behind a rejection promising "try again in 24 hours" that never
+ * came true. With the queue time, the ordinary 24-hour cooldown expires on its own.
  */
 async function findLastSentToContact(
   workspaceId: string,
   messageId: string,
   leadId: string | null,
   contactId: string | null,
-  now: Date,
 ): Promise<Date | null> {
   let identity
   if (contactId !== null) identity = eq(schema.leads.contactId, contactId)
@@ -275,7 +298,7 @@ async function findLastSentToContact(
     .select({
       last: sql<number | null>`extract(epoch from max(
         case when ${schema.messages.status} = 'queued'
-             then ${now.toISOString()}::timestamptz
+             then ${schema.messages.updatedAt}
              else ${schema.messages.sentAt}
         end
       ))::float8`,
