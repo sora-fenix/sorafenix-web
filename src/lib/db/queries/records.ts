@@ -322,6 +322,23 @@ export async function listCampaigns(
   return buildPage(rows, scoped, total)
 }
 
+export type CampaignOption = { id: string; name: string }
+
+/**
+ * Every campaign in the workspace, for a picker.
+ *
+ * Unpaginated and two columns wide, unlike `listCampaigns`: a `<select>` that
+ * only offered the first page would silently hide the campaign the user wants.
+ * A workspace has campaigns in the tens, not the thousands.
+ */
+export async function listCampaignOptions(workspaceId: string): Promise<CampaignOption[]> {
+  return db
+    .select({ id: campaigns.id, name: campaigns.name })
+    .from(campaigns)
+    .where(eq(campaigns.workspaceId, workspaceId))
+    .orderBy(asc(campaigns.name), asc(campaigns.id))
+}
+
 // -----------------------------------------------------------------------------
 // Messages — inbox and approvals
 // -----------------------------------------------------------------------------
@@ -337,6 +354,32 @@ export type MessageRow = {
   companyName: string | null
   contactName: string | null
 }
+
+/**
+ * The `on` conditions from a message out to its lead, company and contact.
+ *
+ * Each carries `workspace_id` equality as well as the id. The foreign key
+ * guarantees the child row exists; it says nothing about which tenant owns it,
+ * and there is no composite FK on `(workspace_id, id)`, no CHECK and no trigger
+ * tying a child's workspace to its parent's. Without these the isolation of
+ * `listInbox` and `listApprovals` rests on every writer having been correct —
+ * so the condition is written down and the planner enforces it instead.
+ *
+ * Constants rather than a helper function: Drizzle's builder type changes with
+ * every join, so a wrapper would need a type assertion, and rule 9 forbids one.
+ */
+const MESSAGE_LEAD_ON = and(
+  eq(leads.id, messages.leadId),
+  eq(leads.workspaceId, messages.workspaceId),
+)
+const MESSAGE_COMPANY_ON = and(
+  eq(companies.id, leads.companyId),
+  eq(companies.workspaceId, messages.workspaceId),
+)
+const MESSAGE_CONTACT_ON = and(
+  eq(contacts.id, leads.contactId),
+  eq(contacts.workspaceId, messages.workspaceId),
+)
 
 function messageSelection() {
   return {
@@ -364,9 +407,9 @@ export async function listInbox(
   const rows = await db
     .select(messageSelection())
     .from(messages)
-    .leftJoin(leads, eq(leads.id, messages.leadId))
-    .leftJoin(companies, eq(companies.id, leads.companyId))
-    .leftJoin(contacts, eq(contacts.id, leads.contactId))
+    .leftJoin(leads, MESSAGE_LEAD_ON)
+    .leftJoin(companies, MESSAGE_COMPANY_ON)
+    .leftJoin(contacts, MESSAGE_CONTACT_ON)
     .where(where)
     .orderBy(sql`${messages.sentAt} desc nulls last`, desc(messages.createdAt), asc(messages.id))
     .limit(scoped.pageSize)
@@ -376,6 +419,18 @@ export async function listInbox(
 }
 
 /**
+ * A draft plus where its contact came from.
+ *
+ * The provenance is on the approval screen and not only on the contact record
+ * because this is the last human checkpoint before a message goes out. A contact
+ * that arrived on a spreadsheet somebody uploaded carries a different obligation
+ * from one the scraper found on a public business listing, and the person
+ * clicking approve is the one who has to know which they are looking at
+ * (`.claude/rules/outreach.md`, "who we are allowed to contact").
+ */
+export type ApprovalRow = MessageRow & { contactSource: string | null }
+
+/**
  * The approval queue. `needs_input` first: those are drafts the AI could not
  * complete from knowledge_docs and which must never be sent as-is
  * (CLAUDE.md rule 3).
@@ -383,7 +438,7 @@ export async function listInbox(
 export async function listApprovals(
   workspaceId: string,
   request: PageRequest,
-): Promise<Page<MessageRow>> {
+): Promise<Page<ApprovalRow>> {
   const where = and(
     eq(messages.workspaceId, workspaceId),
     inArray(messages.status, ['needs_input', 'pending_approval']),
@@ -392,11 +447,11 @@ export async function listApprovals(
   const scoped = clampToTotal(request, total)
 
   const rows = await db
-    .select(messageSelection())
+    .select({ ...messageSelection(), contactSource: contacts.source })
     .from(messages)
-    .leftJoin(leads, eq(leads.id, messages.leadId))
-    .leftJoin(companies, eq(companies.id, leads.companyId))
-    .leftJoin(contacts, eq(contacts.id, leads.contactId))
+    .leftJoin(leads, MESSAGE_LEAD_ON)
+    .leftJoin(companies, MESSAGE_COMPANY_ON)
+    .leftJoin(contacts, MESSAGE_CONTACT_ON)
     .where(where)
     .orderBy(
       sql`case when ${messages.status} = 'needs_input' then 0 else 1 end`,
