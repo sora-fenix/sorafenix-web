@@ -31,15 +31,26 @@ name: sora-waha
 services:
   waha:
     # Pinned, like n8n: `latest` drifts, and a transport that changes behaviour
-    # without a diff is a transport nobody can debug. `latest-*` is the WEBJS
-    # build (bundles Chromium) that WHATSAPP_DEFAULT_ENGINE below expects; the
-    # `noweb-*` and `gows-*` tags are the lighter websocket engines.
+    # without a diff is a transport nobody can debug.
+    #
+    # NOWEB, not WEBJS, and this was learned the hard way on 2026-09-27. The
+    # `latest-*` image runs the WEBJS engine, which drives real Chromium through
+    # Puppeteer and patches WhatsApp Web's own internals. WhatsApp changed those
+    # internals, so pairing died with
+    #   TypeError: window.require(...).Cmd.refreshQR is not a function
+    # and no QR or pairing code could succeed — the engine was broken, not
+    # misconfigured. That is the standing risk of a browser-scraping engine: it
+    # breaks whenever WhatsApp ships a change, and stays broken until the library
+    # catches up.
+    #
+    # NOWEB speaks WhatsApp's websocket protocol directly. No browser, no
+    # Chromium in the container, nothing to patch, and far less to go wrong.
     #
     # This is WAHA **Core**, the free image. It is enough for one session, which
     # is all development needs. Core's session limit is worth checking before
     # anyone points a second tenant at the same instance — the session name is
     # our tenant key (decision 81), so more tenants means more sessions.
-    image: devlikeapro/waha:latest-2026.9.1
+    image: devlikeapro/waha:noweb-2026.9.1
     container_name: sora_waha
     restart: unless-stopped
     ports:
@@ -81,11 +92,14 @@ services:
       # once rather than every time the container cycles.
       WHATSAPP_RESTART_ALL_SESSIONS: 'true'
 
+      # Must match the image line above. NOWEB keeps a local store so chat and
+      # contact lookups work without a browser.
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+
       # The session name is the tenant key (PROGRESS decision 81): SORA resolves
       # the workspace from it via `integrations.meta.session`, and migration 0018
       # makes two workspaces unable to share one. Keep this equal to whatever
       # `pnpm wa:connect --session` registered.
-      WHATSAPP_DEFAULT_ENGINE: WEBJS
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
