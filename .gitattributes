@@ -4,3 +4,8 @@
 # Generated — keep out of diffs and language stats.
 pnpm-lock.yaml linguist-generated=true -diff
 drizzle/meta/*.json linguist-generated=true -diff
+
+# The CSV template is a downloadable artefact, not source. It ships with a BOM
+# and CRLF because Indonesian Excel wants both (src/lib/export/csv.ts); storing
+# it as LF would hand a user a file unlike the one we export.
+public/templates/*.csv -text
