@@ -4,6 +4,7 @@ import type postgres from 'postgres'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { POST } from '@/app/api/webhooks/n8n/leads/route'
+import { MAX_INGEST_ITEMS } from '@/lib/leads/limits'
 
 import { openDatabase } from './helpers'
 
@@ -565,6 +566,23 @@ describe('POST /api/webhooks/n8n/leads — dedupe', () => {
       select count(*)::int as n from activities
       where workspace_id = ${workspaceId} and type = 'lead_duplicate_merged'`
     expect(merged?.n).toBe(1)
+  })
+
+  it('refuses a payload over the item cap, writing nothing', async () => {
+    // The cap has been enforced since the route was written and nothing proved
+    // it. It became worth pinning when the constant moved to lib/leads/limits.ts
+    // to be shared with the CSV path: a shared constant is easy to change, and
+    // nothing here would have failed if the cap quietly stopped applying.
+    const items = Array.from({ length: MAX_INGEST_ITEMS + 1 }, (_, index) => ({
+      company_name: `Toko ${index}`,
+      phone: '+628123456789',
+    }))
+
+    const response = await post(payload(items, 'run-overcap'))
+
+    expect(response.status).toBe(422)
+    expect(await countCompanies()).toBe(0)
+    expect(await countLeads()).toBe(0)
   })
 
   it('collapses two identical items inside one payload', async () => {
