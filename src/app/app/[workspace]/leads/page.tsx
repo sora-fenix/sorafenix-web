@@ -1,7 +1,9 @@
 import { Download } from 'lucide-react'
 import type { Metadata } from 'next'
+import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
+import { ImportLeadsForm } from './import-leads-form'
 import { CategoryBadge, LeadStatusBadge } from '@/components/crm/labels'
 import { navItem, workspaceApiHref, workspaceHref } from '@/components/layout/nav-items'
 import { EmptyState, PageShell } from '@/components/layout/page-shell'
@@ -15,8 +17,9 @@ import {
 } from '@/components/ui/table'
 import { Pagination } from '@/components/layout/pagination'
 import { buttonVariants } from '@/components/ui/button'
+import { can } from '@/lib/auth/permissions'
 import { getWorkspaceContext } from '@/lib/auth/session'
-import { listLeads } from '@/lib/db/queries/records'
+import { listCampaignOptions, listLeads } from '@/lib/db/queries/records'
 import { formatNumber, formatRelativeDay, isOverdue, truncate } from '@/lib/format'
 import { pageRequest } from '@/lib/pagination'
 
@@ -38,14 +41,46 @@ export default async function LeadsPage({ params, searchParams }: PageProps) {
   const rows = page.rows
   const basePath = workspaceHref(slug, 'leads')
 
+  // The upload panel is built here, once, and rendered in both branches below:
+  // an empty workspace is exactly where someone reaches for a spreadsheet.
+  // A viewer holds no `lead:write`, so they never see the form at all.
+  const mayImport = can(context.role, 'lead:write')
+  const campaignOptions = mayImport ? await listCampaignOptions(context.workspace.id) : []
+
+  const importPanel = !mayImport ? null : (
+    <section className="mb-6 rounded-xl border p-4">
+      <h2 className="text-sm font-semibold">Unggah prospek dari CSV</h2>
+      <p className="text-muted-foreground mt-1 text-xs">
+        Untuk daftar yang Anda kumpulkan sendiri. Baris yang sudah ada digabung,
+        bukan diduplikasi.
+      </p>
+      <div className="mt-4">
+        {campaignOptions.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            Buat kampanye dulu — setiap prospek harus masuk ke salah satunya.{' '}
+            <Link
+              href={workspaceHref(slug, 'campaigns')}
+              className="underline underline-offset-4"
+            >
+              Buka Kampanye
+            </Link>
+          </p>
+        ) : (
+          <ImportLeadsForm workspaceSlug={slug} campaigns={campaignOptions} />
+        )}
+      </div>
+    </section>
+  )
+
   if (rows.length === 0) {
     return (
       <PageShell title={item.label} description={item.description}>
+        {importPanel}
         <EmptyState
           icon={item.icon}
           title="Belum ada prospek"
           description="Prospek akan muncul otomatis setelah n8n mengirim hasil pencarian ke SORA dan lolos proses dedupe."
-          hint="Jalankan `pnpm db:seed` untuk mengisi data demo."
+          hint="Jalankan `pnpm db:seed` untuk mengisi data demo, atau unggah CSV di atas."
         />
       </PageShell>
     )
@@ -53,6 +88,7 @@ export default async function LeadsPage({ params, searchParams }: PageProps) {
 
   return (
     <PageShell title={item.label} description={item.description}>
+      {importPanel}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <p className="text-muted-foreground text-sm">
           {formatNumber(page.total)} prospek, diurutkan dari skor tertinggi.

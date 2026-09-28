@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { db, schema } from '@/lib/db/drizzle'
 import { type IngestItem, ingestLeads, rejectionsFor } from '@/lib/leads/ingest'
+import { MAX_INGEST_ITEMS } from '@/lib/leads/limits'
 import { verifyN8nSignature } from '@/lib/webhooks/signature'
 
 import { and, eq } from 'drizzle-orm'
@@ -27,9 +28,6 @@ export const runtime = 'nodejs'
 
 const PROVIDER = 'n8n'
 
-/** Bounds the work one signed request can ask for. */
-const MAX_ITEMS = 1000
-
 const itemSchema = z.object({
   company_name: z.string().min(1).max(500),
   website: z.string().max(2048).nullish(),
@@ -52,7 +50,7 @@ const payloadSchema = z.object({
   campaign_id: z.uuid(),
   source: z.enum(['serper_places', 'serper_search', 'csv']),
   idempotency_key: z.string().min(1).max(200),
-  items: z.array(itemSchema).max(MAX_ITEMS),
+  items: z.array(itemSchema).max(MAX_INGEST_ITEMS),
   /**
    * Which plan item produced this batch (ADR 0001 §5). Optional because a CSV
    * or a manual post has no plan behind it. Nothing reads it yet: it is stored

@@ -55,6 +55,9 @@ export type CsvColumn<T> = {
  */
 const FORMULA_LEAD = /^[=+\-@]/
 
+/** Exactly what `textCell` produces from `FORMULA_LEAD`, and nothing wider. */
+const ESCAPED_FORMULA_LEAD = /^'([=+\-@])/
+
 /** Phone numbers we are willing to write as a formula: digits and separators only. */
 const SAFE_PHONE = /^\+?[\d][\d\s()-]{4,24}$/
 
@@ -63,6 +66,25 @@ export function textCell(value: string | null | undefined): CsvCell {
   // A leading apostrophe is how a spreadsheet is told "this is text". It survives
   // into the cell as a marker rather than as content in both Excel and Sheets.
   return { kind: 'text', value: FORMULA_LEAD.test(text) ? `'${text}` : text }
+}
+
+/**
+ * The inverse of the apostrophe `textCell` adds, so a re-uploaded export gets its
+ * company names back.
+ *
+ * As narrow as the writer is wide: only a leading `'` immediately followed by one
+ * of the four `FORMULA_LEAD` characters. `@home Cafe` exports as `'@home Cafe`
+ * and must come back as `@home Cafe`, or that apostrophe becomes part of
+ * `companies.name` — the string the Prospek screen shows, the export writes
+ * again, and the draft generator addresses the customer by.
+ *
+ * A name that genuinely opens with `'@` is indistinguishable from an escaped one
+ * and loses its apostrophe. That is the accepted cost of the pair being exact
+ * inverses; the alternative is every escaped name accumulating one apostrophe per
+ * round trip.
+ */
+export function unescapeTextCell(value: string): string {
+  return value.replace(ESCAPED_FORMULA_LEAD, '$1')
 }
 
 export function numberCell(value: number | null | undefined): CsvCell {
@@ -90,6 +112,24 @@ export function phoneCell(value: string | null | undefined): CsvCell {
   if (text === '') return { kind: 'text', value: '' }
   if (!SAFE_PHONE.test(text)) return textCell(text)
   return { kind: 'formula', value: `="${text}"` }
+}
+
+/**
+ * The inverse of `phoneCell`, so a file we exported can be uploaded back.
+ *
+ * It lives here rather than in the importer because it has to match `phoneCell`
+ * character for character: same wrapper, same `SAFE_PHONE`. Two copies of that
+ * pair in two files drift, and the drift shows up as a phone number silently
+ * imported as the literal text `="+62812…"`.
+ *
+ * Takes a field that was **not** quoted in the file — that is the only way the
+ * writer emits a formula. Anything else returns null and stays the text it is.
+ */
+export function unwrapPhoneCell(raw: string): string | null {
+  const match = /^="([^"]*)"$/.exec(raw)
+  if (match === null) return null
+  const inner = match[1] ?? ''
+  return SAFE_PHONE.test(inner) ? inner : null
 }
 
 export function dateCell(value: Date | null | undefined, timeZone = 'Asia/Jakarta'): CsvCell {
