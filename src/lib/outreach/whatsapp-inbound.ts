@@ -38,6 +38,18 @@ import { findWorkspacesForSession } from './whatsapp-account'
  *
  * NO AUTO-REPLY (CLAUDE.md rule 5). Nothing here creates an outbound `messages` row
  * and nothing here calls a model. A human approves every message that leaves.
+ *
+ * AND IT ONLY STORES CONVERSATIONS THAT ARE OURS (owner decision, 2026-09-28). A
+ * client connects their own WhatsApp account, so WAHA hands us every inbound message
+ * on it — including their private chats with family. Testing against a personal
+ * number on 2026-09-27 put six real private conversations into `messages` inside four
+ * minutes. That is third-party personal data with no lawful basis to hold it, and the
+ * rule in `.claude/rules/outreach.md` — a contact of unclear provenance is treated as
+ * personal and left alone — is the one that was broken. So an inbound `message` is
+ * stored only when `matchChat` finds evidence this workspace is already a party to the
+ * chat. Everything else is a 200 and NOTHING is written: no `messages` row, and no
+ * `webhook_events` receipt either, because `webhook_events.payload` holds the whole
+ * body and therefore the message text. Same shape as the unknown-session path above it.
  */
 
 // -----------------------------------------------------------------------------
@@ -87,8 +99,13 @@ export type InboundOutcome =
   | { readonly kind: 'ignored_echo' }
   /** No workspace owns this session, or more than one does. Nothing was written. */
   | { readonly kind: 'unattributable'; readonly reason: 'unknown_session' | 'ambiguous_session' }
+  /**
+   * The chat is not one this workspace is a party to — most likely the account
+   * owner's own private conversation. Nothing was written, receipt included.
+   */
+  | { readonly kind: 'ignored_unmatched_chat' }
   | { readonly kind: 'replayed' }
-  /** Stored. `leadId` is null when the sender matches no contact in this workspace. */
+  /** Stored. `leadId` is null when the chat matched but no lead hangs off it. */
   | { readonly kind: 'stored'; readonly messageId: string; readonly leadId: string | null }
   | { readonly kind: 'ack_applied'; readonly status: MessageStatus; readonly updated: number }
   /** A PENDING ack, or one that would have moved a message backwards. */
@@ -121,9 +138,45 @@ export async function handleWahaEvent(event: WahaEvent): Promise<InboundOutcome>
   }
   const workspaceId = resolved.value
 
+  // An ack is about OUR OWN outbound message and carries no third-party content, so it
+  // goes straight through on `provider_message_id` as it always has.
+  if (event.event !== 'message') {
+    return claimThen(workspaceId, event, (tx) => applyAck(tx, workspaceId, event))
+  }
+
+  // Whose chat this is, decided BEFORE the receipt is claimed, because the receipt
+  // stores the body. See the note at the top of this file.
+  const chatId = event.payload.from ?? null
+  const match = await matchChat(workspaceId, chatId)
+  if (match === null) {
+    // The diagnostic that tells us the correlation key is wrong — and the ONLY thing
+    // we are allowed to keep about a chat that is not ours, so it names the session
+    // and the chat id and never the body. A flood of `@lid` here means replies are
+    // being dropped and the key needs revisiting, not that the rule is wrong.
+    console.warn(
+      `[whatsapp] unmatched chat: session "${event.session}" chat ` +
+        `"${chatId ?? 'none'}" matches no outbound thread and no contact in this ` +
+        `workspace; inbound message dropped, nothing written`,
+    )
+    return { kind: 'ignored_unmatched_chat' }
+  }
+
+  return claimThen(workspaceId, event, (tx) => storeInbound(tx, workspaceId, event, match))
+}
+
+/**
+ * The idempotency claim, and the work it guards.
+ *
+ * Claiming first means a redelivery blocks on the unique index until this transaction
+ * commits, rather than racing it. Nothing may call this for an event we have decided
+ * not to keep: the receipt's `payload` column is a copy of the whole webhook body.
+ */
+async function claimThen(
+  workspaceId: string,
+  event: WahaEvent,
+  work: (tx: Transaction) => Promise<InboundOutcome>,
+): Promise<InboundOutcome> {
   return db.transaction(async (tx) => {
-    // Claiming first means a redelivery blocks on the unique index until this
-    // transaction commits, rather than racing it.
     const claimed = await tx
       .insert(schema.webhookEvents)
       .values({
@@ -140,10 +193,7 @@ export async function handleWahaEvent(event: WahaEvent): Promise<InboundOutcome>
     const receipt = claimed[0]
     if (receipt === undefined) return { kind: 'replayed' }
 
-    const outcome =
-      event.event === 'message'
-        ? await storeInbound(tx, workspaceId, event)
-        : await applyAck(tx, workspaceId, event)
+    const outcome = await work(tx)
 
     await tx
       .update(schema.webhookEvents)
@@ -183,14 +233,80 @@ export function idempotencyKeyFor(event: WahaEvent): string {
 // -----------------------------------------------------------------------------
 
 /**
- * Stores the inbound message, attributed to a lead when the sender is one of this
- * workspace's contacts and to nobody when they are not.
+ * What makes a chat ours, or null when nothing does.
  *
- * An unmatched sender is STORED, never dropped. Somebody messaged the business on a
- * number the business is running a campaign from; the row is the only trace of that,
- * and a human reading the inbox is the one who can say who it was. What must not
- * happen is attributing it to a lead in some other workspace, which is why the
- * contact lookup below is inside the resolved workspace and nowhere else.
+ * `leadId` may still be null inside a match — an outbound message with no lead, or a
+ * contact we know but have opened no lead for. Matched-but-unattributed is a row a
+ * human can file; unmatched is a row we must not have at all.
+ */
+type ChatMatch = { readonly leadId: string | null }
+
+/**
+ * Two independent kinds of evidence that this workspace is already a party to the chat.
+ * Either one is enough; neither means we write nothing.
+ *
+ *  1. **A contact in this workspace has the sender's number.** The workspace collected
+ *     it as a business contact, so the provenance is known and the person is already a
+ *     data subject in this CRM. The account owner's mother is not in `contacts`.
+ *  2. **We have an outbound message on this exact thread.** `send.ts` writes
+ *     `thread_id = toChatId(recipient)`; an inbound with the same chat id is the reply
+ *     to a conversation we opened.
+ *
+ * Contact first, because it yields the lead attribution directly and survives the case
+ * where the outbound row lost its thread. Thread second, and it carries the lead from
+ * the message being answered, which is right even when the number has since changed
+ * hands between contacts.
+ *
+ * THE KNOWN HOLE, and it is unresolved: live traffic on 2026-09-27 arrived as
+ * `30589042323502@lid`, WhatsApp's opaque linked-id, which by design reveals no phone
+ * number — so `fromChatId` returns null for it and it can never equal a `@c.us` thread
+ * id either. Both keys therefore miss every `@lid` chat. It is plausible that replies
+ * to chats WE opened come back as `@c.us` and `@lid` only appears for chats strangers
+ * started, which is what the six dropped ones were; that is UNVERIFIED and needs a
+ * dedicated number to check. Until then the miss is deliberate and the `console.warn`
+ * in `handleWahaEvent` is how we will see it: a lost reply is recoverable and visible,
+ * a stranger's private conversation in our database is neither.
+ */
+async function matchChat(workspaceId: string, chatId: string | null): Promise<ChatMatch | null> {
+  if (chatId === null) return null
+
+  const e164 = fromChatId(chatId)
+  const contactId = e164 === null ? null : await findContactByNumber(workspaceId, e164)
+  if (contactId !== null) return { leadId: await findLeadForContact(workspaceId, contactId) }
+
+  return findOurThread(workspaceId, chatId)
+}
+
+/**
+ * True, as a match, when this workspace has sent something on this chat.
+ *
+ * Only `direction: 'out'` rows count. An inbound row on the thread would make the
+ * first stored message of a foreign chat the reason the second one is stored too.
+ */
+async function findOurThread(workspaceId: string, chatId: string): Promise<ChatMatch | null> {
+  const [ours] = await db
+    .select({ leadId: schema.messages.leadId })
+    .from(schema.messages)
+    // rule 6: the Drizzle handle bypasses RLS, so the tenant filter is written out.
+    .where(
+      and(
+        eq(schema.messages.workspaceId, workspaceId),
+        eq(schema.messages.direction, 'out'),
+        eq(schema.messages.threadId, chatId),
+      ),
+    )
+    .orderBy(desc(schema.messages.createdAt))
+    .limit(1)
+
+  return ours === undefined ? null : { leadId: ours.leadId }
+}
+
+/**
+ * Stores the inbound message, attributed to the lead `matchChat` found and to nobody
+ * when it found none.
+ *
+ * Only ever called for a chat that matched. A sender we cannot place is not stored at
+ * all any more — see the note at the top of this file for what that is protecting.
  *
  * Status `delivered`, not `replied`: `delivered` describes this row — the message
  * reached us — while `replied` is a state the OUTBOUND message it answers moves to,
@@ -200,9 +316,9 @@ async function storeInbound(
   tx: Transaction,
   workspaceId: string,
   event: WahaEvent,
+  match: ChatMatch,
 ): Promise<InboundOutcome> {
-  const from = fromChatId(event.payload.from ?? null)
-  const leadId = from === null ? null : await findLeadByNumber(tx, workspaceId, from)
+  const leadId = match.leadId
 
   const [row] = await tx
     .insert(schema.messages)
@@ -233,7 +349,7 @@ function timestampOf(timestamp: number | undefined): Date {
 }
 
 /**
- * The lead this number belongs to, inside this workspace only.
+ * The contact this number belongs to, inside this workspace only.
  *
  * `whatsapp` or `phone`, because a contact scraped with one landline-shaped number
  * may still reply from it, and both columns hold the same normalised E.164.
@@ -241,17 +357,14 @@ function timestampOf(timestamp: number | undefined): Date {
  * Exactly one matching contact, or nothing. Two contacts in one workspace sharing a
  * number is a deduplication problem, and picking one of them would file the
  * conversation against a coin flip — an unattributed row a human can fix is better
- * than a confidently wrong one nobody notices.
+ * than a confidently wrong one nobody notices. A number that is ambiguous here can
+ * still match on the thread, which names one conversation and not two.
  */
-async function findLeadByNumber(
-  tx: Transaction,
-  workspaceId: string,
-  e164: string,
-): Promise<string | null> {
+async function findContactByNumber(workspaceId: string, e164: string): Promise<string | null> {
   const phone = normalizePhone(e164)
   if (phone === null) return null
 
-  const contacts = await tx
+  const contacts = await db
     .select({ id: schema.contacts.id })
     .from(schema.contacts)
     // rule 6: the Drizzle handle bypasses RLS. This filter is the tenant boundary
@@ -266,12 +379,19 @@ async function findLeadByNumber(
 
   const contact = contacts[0]
   if (contact === undefined || contacts.length > 1) return null
+  return contact.id
+}
 
-  const [lead] = await tx
+/** The newest lead for a contact, or none. */
+async function findLeadForContact(
+  workspaceId: string,
+  contactId: string,
+): Promise<string | null> {
+  const [lead] = await db
     .select({ id: schema.leads.id })
     .from(schema.leads)
     .where(
-      and(eq(schema.leads.workspaceId, workspaceId), eq(schema.leads.contactId, contact.id)),
+      and(eq(schema.leads.workspaceId, workspaceId), eq(schema.leads.contactId, contactId)),
     )
     // The newest lead for this contact. An older, closed lead is not what a reply
     // today is about.

@@ -127,6 +127,21 @@ function code(relative: string): string {
 }
 
 /**
+ * One top-level function's source, so a rule can be about the ORDER of what it does
+ * rather than the presence of a token somewhere in the file.
+ *
+ * Prettier puts the closing brace of a top-level declaration at column 0 and indents
+ * every nested one, so the first `\n}` after the signature is the end of the function.
+ */
+function functionBody(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`)
+  if (start === -1) throw new Error(`no function named ${name}`)
+  const end = source.indexOf('\n}', start)
+  if (end === -1) throw new Error(`could not find the end of ${name}`)
+  return source.slice(start, end)
+}
+
+/**
  * Module specifiers this file references, however it references them.
  *
  * Covers `from 'x'`, `from "x"`, `import 'x'`, `import('x')` and `require('x')`.
@@ -242,6 +257,59 @@ describe('the inbound WhatsApp path', () => {
       (match) => match[1],
     )
     expect(new Set(written)).toEqual(new Set(['messages', 'webhookEvents']))
+  })
+
+  /**
+   * An inbound `message` on a chat we cannot place writes NOTHING — owner decision,
+   * 2026-09-28, after six of the account owner's private conversations landed in
+   * `messages` during a test with a personal number. A client's WhatsApp account
+   * carries their family chats, and we have no lawful basis to hold those.
+   *
+   * The `webhook_events` receipt is the half that is easy to forget: its `payload`
+   * column is the whole webhook body, message text included, so a receipt written for
+   * a dropped message stores exactly the content the drop was for. Hence the shape
+   * this rule pins — `matchChat` first, the `return` second, and only then any call
+   * to `claimThen`, which is the one place a receipt is written.
+   */
+  it('decides whose chat it is before it writes anything', () => {
+    const source = code(INBOUND)
+    const body = functionBody(source, 'handleWahaEvent')
+
+    const matchAt = body.indexOf('matchChat(')
+    const dropAt = body.indexOf("kind: 'ignored_unmatched_chat'")
+    const storeAt = body.indexOf('storeInbound(')
+
+    expect(matchAt).toBeGreaterThan(-1)
+    // The guard returns before the storing path is ever reached.
+    expect(dropAt).toBeGreaterThan(matchAt)
+    expect(storeAt).toBeGreaterThan(dropAt)
+
+    // Anything claimed before the match is decided must be an ack, which is about our
+    // own outbound message and carries nobody else's content.
+    for (const claim of body.matchAll(/claimThen\(/g)) {
+      const at = claim.index
+      if (at === undefined || at > matchAt) continue
+      expect(body.slice(at, at + 200)).toContain('applyAck')
+    }
+
+    // And the receipt has exactly one writer, so the ordering above is the only gate
+    // it can be written behind.
+    expect(source.match(/insert\(schema\.webhookEvents\)/g)).toHaveLength(1)
+    expect(functionBody(source, 'claimThen')).toContain('insert(schema.webhookEvents)')
+  })
+
+  /**
+   * The warn line is the diagnostic that tells us the correlation key is wrong — the
+   * `@lid` chat ids seen in live traffic match no `@c.us` thread — so it has to name
+   * the chat. It must never name the body: a log line holding a stranger's message is
+   * the same leak as the row we refused to write, in a different file.
+   */
+  it('never logs a message body', () => {
+    for (const file of INBOUND_PATH_FILES) {
+      for (const call of code(file).matchAll(/console\.\w+\(([\s\S]*?)\n\s*\)/g)) {
+        expect(call[1], file).not.toContain('body')
+      }
+    }
   })
 
   /**

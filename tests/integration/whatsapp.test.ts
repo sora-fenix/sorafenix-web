@@ -158,17 +158,26 @@ async function makeOutbound(options: {
   status?: string
   providerMessageId?: string | null
   body?: string
+  /** What `send.ts` writes on a successful send: the chat this went out on. */
+  threadId?: string | null
 }): Promise<string> {
   const [row] = await sql<{ id: string }[]>`
     insert into messages (workspace_id, lead_id, channel, direction, status, body,
-                          template_id, provider_message_id)
+                          template_id, provider_message_id, thread_id)
     values (${options.workspace}, ${options.leadId}, 'whatsapp', 'out',
             ${options.status ?? 'approved'},
             ${options.body ?? 'Halo Pak Budi, boleh saya kirim ringkasannya?'},
-            'sapaan_pertama', ${options.providerMessageId ?? null})
+            'sapaan_pertama', ${options.providerMessageId ?? null},
+            ${options.threadId ?? null})
     returning id`
   if (row === undefined) throw new Error('message fixture failed')
   return row.id
+}
+
+async function webhookEventCount(...workspaceIds: string[]): Promise<number> {
+  const rows = await sql<{ n: number }[]>`
+    select count(*)::int as n from webhook_events where workspace_id in ${sql(workspaceIds)}`
+  return rows[0]?.n ?? -1
 }
 
 type Row = Record<string, unknown>
@@ -365,19 +374,9 @@ describe('attribution', () => {
     expect(rows[0]?.session).toBe(SESSION_B)
   })
 
-  it('stores a reply from a number it does not know, with no lead', async () => {
-    await makeLead({ workspace: workspaceA, whatsapp: '+628999000111' })
-
-    const response = await post(messageEvent())
-    expect(await bodyOf(response)).toMatchObject({ kind: 'stored', leadId: null })
-
-    const stored = await messagesIn(workspaceA)
-    expect(stored).toHaveLength(1)
-    expect(stored[0]).toMatchObject({ lead_id: null, direction: 'in' })
-  })
-
-  it('stores a group message without attributing it to anyone', async () => {
+  it('stores a group message from nobody it knows nowhere at all', async () => {
     await makeLead({ workspace: workspaceA })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     const response = await post(
       messageEvent({
@@ -385,7 +384,10 @@ describe('attribution', () => {
       }),
     )
 
-    expect(await bodyOf(response)).toMatchObject({ kind: 'stored', leadId: null })
+    // A group is not a contact, and its other members never agreed to anything.
+    expect(await bodyOf(response)).toEqual({ kind: 'ignored_unmatched_chat' })
+    expect(await messagesIn(workspaceA)).toHaveLength(0)
+    warn.mockRestore()
   })
 
   /**
@@ -433,6 +435,138 @@ describe('attribution', () => {
     expect(await bodyOf(first)).toMatchObject({ kind: 'stored' })
     expect(await bodyOf(second)).toEqual({ kind: 'replayed' })
     expect(await messagesIn(workspaceA)).toHaveLength(1)
+  })
+})
+
+// -----------------------------------------------------------------------------
+// Whose conversation is this
+// -----------------------------------------------------------------------------
+
+/**
+ * Owner decision, 2026-09-28. The client's own WhatsApp account is connected, so WAHA
+ * delivers their private chats too — six of them reached `messages` during a test with
+ * a personal number on 2026-09-27. An inbound message is kept only when this workspace
+ * is already a party to the chat, and everything else is a 200 with nothing written.
+ *
+ * `webhook_events` is asserted as hard as `messages` here: its `payload` column is the
+ * whole webhook body, so a receipt for a dropped message would store the very text the
+ * drop was for.
+ */
+describe('an inbound message on a chat that is not ours', () => {
+  /** WhatsApp's opaque linked-id, exactly as live traffic delivered it on 2026-09-27. */
+  const LID = '30589042323502@lid'
+
+  const stranger = messageEvent({
+    payload: {
+      id: 'false_30589042323502@lid_PRIV1',
+      timestamp: 1_767_225_700,
+      from: LID,
+      body: 'Ma, nanti sore jadi jemput adik?',
+    },
+  })
+
+  it('writes no message row and no webhook_events receipt', async () => {
+    await makeLead({ workspace: workspaceA })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const response = await post(stranger)
+
+    expect(response.status).toBe(200)
+    expect(await bodyOf(response)).toEqual({ kind: 'ignored_unmatched_chat' })
+    expect(await messagesIn(workspaceA)).toHaveLength(0)
+    expect(await messagesIn(workspaceB)).toHaveLength(0)
+    expect(await webhookEventCount(workspaceA, workspaceB)).toBe(0)
+    warn.mockRestore()
+  })
+
+  it('warns with the chat id, and never with what was said', async () => {
+    await makeLead({ workspace: workspaceA })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await post(stranger)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = warn.mock.calls[0]?.[0]
+    warn.mockRestore()
+
+    // The diagnostic that would tell us the correlation key is wrong: `@lid` can match
+    // no `@c.us` thread, and no regex can recover a number that is not in the id.
+    expect(line).toContain(LID)
+    expect(line).toContain(SESSION_A)
+    // And the leak this whole rule exists to prevent, in a log file instead of a table.
+    expect(line).not.toContain('jemput adik')
+  })
+
+  it('does not treat a chat another workspace started as ours', async () => {
+    // B sent to this number; A did not, and A has no contact for it.
+    const inB = await makeLead({ workspace: workspaceB })
+    await makeOutbound({
+      workspace: workspaceB,
+      leadId: inB.leadId,
+      status: 'sent',
+      threadId: CHAT_ID,
+    })
+    await makeLead({ workspace: workspaceA, whatsapp: '+628999000111' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const response = await post(messageEvent())
+
+    expect(await bodyOf(response)).toEqual({ kind: 'ignored_unmatched_chat' })
+    expect(await messagesIn(workspaceA)).toHaveLength(0)
+    expect(await webhookEventCount(workspaceA)).toBe(0)
+    warn.mockRestore()
+  })
+})
+
+describe('an inbound message on a chat we started', () => {
+  it('is stored even when the number matches no contact', async () => {
+    // What a reply to a campaign send looks like once the contact row has been edited
+    // or the lead moved: the thread is the evidence, not the phone book.
+    const { leadId } = await makeLead({ workspace: workspaceA, whatsapp: '+628999000111' })
+    await makeOutbound({
+      workspace: workspaceA,
+      leadId,
+      status: 'sent',
+      threadId: CHAT_ID,
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const response = await post(messageEvent())
+
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+
+    // Attributed to the lead of the message it answers.
+    expect(await bodyOf(response)).toMatchObject({ kind: 'stored', leadId })
+    const stored = await messagesIn(workspaceA)
+    expect(stored).toHaveLength(2)
+    expect(stored[1]).toMatchObject({
+      lead_id: leadId,
+      direction: 'in',
+      status: 'delivered',
+      thread_id: CHAT_ID,
+    })
+    expect(await webhookEventCount(workspaceA)).toBe(1)
+  })
+
+  /**
+   * An inbound row carries the same `thread_id`, so matching on any message on the
+   * thread would make the first stored foreign message the reason the second one is
+   * stored too. Only our own outbound counts.
+   */
+  it('is not made ours by an earlier inbound row on the same thread', async () => {
+    const { leadId } = await makeLead({ workspace: workspaceA, whatsapp: '+628999000111' })
+    await sql`insert into messages (workspace_id, lead_id, channel, direction, status,
+                                    body, thread_id)
+              values (${workspaceA}, ${leadId}, 'whatsapp', 'in', 'delivered',
+                      'pesan lama', ${CHAT_ID})`
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const response = await post(messageEvent())
+
+    expect(await bodyOf(response)).toEqual({ kind: 'ignored_unmatched_chat' })
+    expect(await messagesIn(workspaceA)).toHaveLength(1)
+    warn.mockRestore()
   })
 })
 
