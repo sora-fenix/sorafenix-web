@@ -29,17 +29,22 @@ deduplicated, and land in `data-riil`. Qualification is real too — a lead is s
 against the workspace's product by a model, banded by a weighted rubric computed in
 code, and moved to `qualified` with an audit row.
 
-What still does not exist: enrichment, message drafting, and sending. Inside a
-workspace every screen remains read-only — scoring runs from a command, not a
-button, because a model call takes 5–37 seconds (known issue 4 and 9).
+Leads also arrive a second way now: a member can upload a CSV from the Prospek
+screen, through the same dedupe and merge path the webhook uses. That is the
+first mutation the product accepts from inside a workspace.
+
+What still does not exist: enrichment, message drafting, and sending. Every other
+screen inside a workspace remains read-only — scoring runs from a command, not a
+button, because a model call takes 5–37 seconds (known issue 4 and 9), and a CSV
+parse is not a model call, which is why this one could be a screen.
 
 | Gate | Status |
 |---|---|
 | `pnpm typecheck` | ✅ clean |
 | `pnpm lint` | ✅ clean, 0 errors 0 warnings |
-| `pnpm test` | ✅ 582 tests, 18 files |
-| `pnpm build` | ✅ all 19 routes built |
-| `pnpm test:integration` | ✅ 231 tests, 13 files |
+| `pnpm test` | ✅ 627 tests, 19 files |
+| `pnpm build` | ✅ all 21 routes built |
+| `pnpm test:integration` | ✅ 245 tests, 14 files |
 | `pnpm ai:smoke` | ✅ real call to `gemini-3.7-flash`, Zod-validated, `ai_runs` row written |
 | `pnpm score:leads` | ✅ 12 real leads scored, 0 failures, scores spread 37–66 |
 | `pnpm classify:leads` | ✅ 1208 real leads classified in 7.4s, scores spread 35–97 |
@@ -2327,8 +2332,109 @@ and now recorded where a human can act on it: an ack matches on
 for good. The HTTP status and a truncated body go into the `message_sent`
 activity payload as the only reconciliation handle there is.
 
-Gates: `typecheck` clean, `lint` clean, `test` 582 in 18 files,
-`test:integration` 231 in 13 files.
+Gates at the close of that slice: `typecheck` clean, `lint` clean, `test` 582 in
+18 files, `test:integration` 231 in 13 files.
+
+---
+
+## CSV upload — the second way a lead gets in (2026-09-28)
+
+Until today a lead could only enter SORA through the HMAC-signed n8n webhook, and
+`src/lib/export/csv.ts` was download-only. A client with a list of their own — an
+exhibitor sheet, a distributor's customer list, the spreadsheet a salesperson has
+kept for years — had no way in at all. That is what blocked "test broadcast ke
+csv" on the owner's one-week plan.
+
+A member holding `lead:write` now uploads a CSV from the Prospek screen. It parses
+in memory and calls **the existing `ingestLeads`**, unchanged, with `source:
+'csv'`. This is a new mouth on the existing throat, not a second pipeline: dedupe,
+blank-field merge and the `activities` rows are the ones already proved on the
+webhook path, which is also why re-uploading the same file inserts nothing and
+needs no idempotency key of its own.
+
+### Why this one is a screen when nothing else is
+
+Every precedent in the repo ships as a script first — `score:leads`,
+`classify:leads`, `generate:content`, `wa:send` — and known issues 4 and 9 record
+that every screen inside a workspace is read-only. But both issues justify that by
+**model-call latency**, and a CSV parse is not a model call. The reasoning does not
+reach this case, so the slice took the screen.
+
+### Two deliberate divergences from the webhook
+
+**No `webhook_events` row.** Its `payload` column holds the entire batch. For an
+uploaded file that is a second copy of the contact data, sitting outside the
+tables the UU PDP deletion path knows to look at. The cost is named: an upload has
+no "already handled" verdict. Dedupe covers the case that actually mattered.
+
+**A rejected row leaves the parser as a line number and a reason code, and nothing
+else** — not in the response, not in a log, not in an error. `db_error` logs
+`error.name` and never `error.message`, because a Postgres error can quote the
+value that broke it and that value is a customer's phone number. Thin diagnostics
+on a failed upload is the accepted price.
+
+Provenance is captured as one required confirmation at upload — refused
+server-side, not only by the browser — and then surfaced **per-lead** on the
+Persetujuan queue as a source badge. The owner asked for the badge specifically,
+and the reason holds: the person approving a send a week later is usually not the
+person who uploaded the file, and `.claude/rules/outreach.md` says a contact of
+unclear provenance is treated as personal and not sent to.
+
+### Four defects found in review, after QA had already passed it
+
+This is the part worth remembering. The gate was green — 615 unit, 243
+integration, `pnpm build` clean — and the review still found four real defects.
+
+1. **The parser built the whole file before any cap applied.** 1 MB of newlines
+   cost 345 MB of heap, 5 MB cost 1.5 GB, and *then* the file was rejected as
+   empty. The row cap sat downstream of the allocation, so it could not help.
+   Three concurrent uploads would have exhausted a 1 GB instance — taking down
+   every tenant on it, not just the uploader. Both caps now bail inside the parse
+   loop. The fix is pinned deterministically rather than by measuring memory:
+   every cap-test input ends with a stray `"`, so a parser that read to the end
+   would answer `unterminated_quote`; getting the cap's answer instead proves it
+   stopped early.
+2. **`MAX_CSV_UPLOAD_BYTES` was 5 MB and unreachable.** Next defaults a server
+   action body to 1 MB and `next.config.ts` was empty, so "Berkas terlalu besar.
+   Maksimal 5 MB." could never be shown — a 1.5 MB file hit the framework's error
+   page instead. The cap is now 1 MiB, still ~2.5× what 1000 rows of the export
+   weigh, and `next.config.ts` pins the body limit from that same constant plus
+   64 KiB of multipart framing headroom rather than inheriting a default. Raising
+   the framework limit instead was rejected: it would widen the body limit for
+   *every* server action in the app in order to serve one form.
+3. **An unterminated quote was accepted as a complete record.** A single stray `"`
+   swallowed every following line into `companies.name` — two leads vanished with
+   no report, and three customers' phone numbers landed in a column that is
+   rendered on two screens, included in the export, and read by the draft
+   generator. That is the privacy promise broken in the *accepted row* rather than
+   in the rejection, which is exactly the place nobody was watching. It is now a
+   file-level error.
+4. **Export → import was not a round trip.** `textCell` prefixes an apostrophe to a
+   value leading with `=`, `+`, `-` or `@` as a CSV-injection guard, and nothing
+   removed it on the way in, so `@home Cafe` re-imported as `'@home Cafe` — while
+   the form copy promised a downloaded file could be uploaded straight back.
+   `unescapeTextCell` now sits beside `textCell` sharing one pattern.
+
+QA then re-verified each fix independently rather than reading the tests: it ran
+the parser on the cap inputs three ways to prove the early exit was real, measured
+the newline case at 1.28 MB of heap growth instead of 345, swept 205 inputs through
+the escape round trip to confirm the one documented loss is the only one, and
+traced Next's own source to confirm a numeric `bodySizeLimit` is honoured rather
+than silently ignored.
+
+### One accepted loss, and one pre-existing hole left open
+
+A company genuinely named `'@home` loses its apostrophe on import, because it is
+indistinguishable from an escaped cell. The alternative is every escaped name
+gaining one apostrophe per round trip, which is worse.
+
+The `workspace_id` join hardening was applied to `listApprovals` and `listInbox`
+only. `listLeads`, `exportLeads`, `listContacts` and `listCompanies` carry the
+same unqualified joins and the same latent exposure — pre-existing, outside this
+slice, and recorded as known issue 28 rather than fixed quietly.
+
+Gates at the close of this slice: `typecheck` clean, `lint` clean, `test` 627 in
+19 files, `test:integration` 245 in 14 files, `build` clean at 21 routes.
 
 ---
 
@@ -2439,10 +2545,12 @@ setup in `docs/n8n-integration.md`.
 3. **`listUsers({ perPage: 1000 })` does not paginate.** Two callers now:
    `scripts/seed.ts` and `listMembersWithEmail()` in `src/lib/auth/members.ts`. Fine
    for a dev seed and a handful of members; fix with the invite flow.
-4. **Every screen inside a workspace is still read-only.** Workspace creation is
-   now the one mutation the UI can make; everything after it — approve/reject on
-   Persetujuan, editing a lead, creating a campaign — is still unwritable. The
-   webhook writes, but nothing behind `/app/{workspace}/…` does.
+4. **Almost every screen inside a workspace is still read-only.** Two mutations
+   exist now: workspace creation, and CSV upload on Prospek (2026-09-28).
+   Everything else — approve/reject on Persetujuan, editing a lead, creating a
+   campaign — is still unwritable. Note the justification has narrowed: this
+   issue and issue 9 blame model-call latency, which is why the CSV path could be
+   a screen and the others still cannot.
 5. **Imported leads are invisible until a screen shows them.** Ingestion writes
    companies, contacts and leads that the existing Leads screen renders, but there
    is no import history view and no way to see a rejection after the fact — the
@@ -2610,6 +2718,17 @@ setup in `docs/n8n-integration.md`.
    2026-09-21 and implemented as `drizzle/0013_managers_may_invite.sql` plus a
    split in the matrix. It took an edit to both layers, which is the point of
    having made them say the same thing.
+28. **Four queries still join across tenants on id alone.** `listApprovals` and
+   `listInbox` were hardened on 2026-09-28 to join `leads`, `companies` and
+   `contacts` on `workspace_id` as well as `id`. `listLeads`, `exportLeads`,
+   `listContacts` and `listCompanies` were not. There is no composite FK on
+   `(workspace_id, id)`, no CHECK and no trigger, so those joins prove a row
+   exists and say nothing about who owns it — isolation there rests on every
+   writer being correct rather than on anything the database enforces. Nothing
+   creates a crossed row today. The first code that sets a foreign key from a
+   value that was not itself workspace-scoped would, and the leak would render
+   another tenant's company and contact names onto the screen. The fix is the
+   same one-line `on` clause, and it costs nothing.
 
 ---
 
@@ -2703,6 +2822,10 @@ setup in `docs/n8n-integration.md`.
 | 82 | A `queued` row counts against quota and cooldown only for the day it was **claimed**, not forever | Fixing a live poisoning, found in review 2026-09-27. `countSentToday` counted `status='queued'` with no date bound and `findLastSentToContact` read a queued row as sent `now()`, so one lost send permanently consumed a quota slot and made that contact uncontactable on every channel, behind a rejection promising a retry that could never arrive. Both are now bounded by `updated_at`, the claim moment — which is also what SPEC §6a already said the check does ("sent or queued **today**"), so this enforces the existing spec rather than adding a rule. The queries predate the slice; the slice is simply the first code that ever writes `queued` at runtime. **The generalisable half:** an enum value present in the schema but never written at runtime is an untested assumption, and `messages.status`'s `opened`/`replied` plus all of `sequence_runs.state` are still in that category. |
 | 83 | A send whose outcome is unknown stays `queued`, never `failed` | The claim must precede the provider call or two concurrent sends both go out, and the provider call is not transactional, so a failure between them leaves a genuinely unknown outcome. `failed` reads as "safe to retry", and retrying a message a customer may already have read is the worse error — so `sendMessage` returns `outcome_unknown` and the row stays claimed. The cost is accepted and named: there is no requeue path, and resolving one needs the provider's own message list, which is the queue slice. |
 | 84 | A capability claim about the inbound path is proved by a **static source scan**, not only by behaviour | `tests/unit/whatsapp-inbound-capability.test.ts` reads the four inbound files and fails on any mention of suppression, any write outside `messages`/`webhook_events`, any reference to the send path, and any import off an allowlist. A behavioural test shows a thing did not happen on one input; it cannot show the code is unable to do it at all — and "unable" is the actual requirement, because a path from one forged webhook to `suppressions` silences a client's whole contact list. Kept in the unit suite because it needs no database, network or env, so it runs in the gate everybody runs. Its first version had three bypasses (dynamic `import()`, a `suppress` helper not containing the string "suppression", and `delete`/raw `execute`), all found in review and closed with each closure re-verified by injecting the violation — a static guard nobody has watched fail is decoration. |
+| 85 | A CSV upload writes **no `webhook_events` row**, unlike the webhook it shares a pipeline with | The column holds the entire batch as jsonb. For a file of contact data that is a second copy living outside the tables the UU PDP deletion path knows to look at, which is the one thing `.claude/rules/outreach.md` says to build against from day one. Idempotency is not lost with it: `ingestLeads` already merges rather than duplicates, so re-uploading the same file inserts nothing without any key at all. What *is* lost is named — an upload has no "already handled" verdict to report back, where the webhook does. |
+| 86 | A rejected row is reported as **a line number and a reason code**, never its contents | The obvious design shows the user which row failed and why, with the row. That turns the error panel, the server log and any stored report into three more copies of contact data the deletion path does not cover. A line number is enough to find the row in the file the user already has open, and the file is the copy they are entitled to keep. Same reasoning extends to `db_error`, which logs `error.name` and never `error.message` — a Postgres error quotes the value that broke it, and that value is a customer's phone number. The cost is thin diagnostics on a failed upload, accepted. |
+| 87 | The upload cap is **1 MiB**, and `next.config.ts` pins the server-action body limit to it | Found in review 2026-09-28: `MAX_CSV_UPLOAD_BYTES` was 5 MB while Next defaults a server-action body to 1 MB, so the "maksimal 5 MB" message was unreachable and a 1.5 MB file hit the framework error page instead of ours. Two ways out; raising `bodySizeLimit` to 5 MB was rejected because it widens the body limit for *every* server action in the app to serve one form. Lowering ours keeps the blast radius at one feature, and 1 MiB is still ~2.5× what 1000 export-shaped rows weigh, so `too_many_rows` stays the message a person actually meets. The config now derives from the same constant plus 64 KiB of multipart framing headroom — without the headroom a file of exactly the cap trips the 413 one byte before our own message. **The generalisable half:** a limit the code states and the framework overrides is not a limit, it is a lie in the UI copy, and nothing in the gate catches it because both halves typecheck. |
+| 88 | Parser caps are enforced **inside the parse loop**, not on the finished array | Found in review 2026-09-28. The row cap ran after `parseRecords` had already materialised every record, so 1 MB of newlines cost 345 MB of heap before being rejected as empty — a cap downstream of the allocation it is meant to bound is not a cap. In a multi-tenant product the failure is not the uploader's: three concurrent uploads exhaust the instance and every tenant on it goes down. Pinned deterministically rather than by measuring memory, which is flaky: every cap-test input ends with an unterminated `"`, so a parser that read to the end would answer `unterminated_quote`, and getting the cap's answer instead proves it stopped early. |
 
 ### Dependencies added beyond the CLAUDE.md §1 stack table
 
