@@ -2,7 +2,7 @@ import { AlertTriangle } from 'lucide-react'
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { CHANNEL_LABELS, MessageStatusBadge } from '@/components/crm/labels'
+import { CHANNEL_LABELS, MessageStatusBadge, SourceBadge } from '@/components/crm/labels'
 import { navItem, workspaceHref } from '@/components/layout/nav-items'
 import { EmptyState, PageShell } from '@/components/layout/page-shell'
 import { Badge } from '@/components/ui/badge'
@@ -84,7 +84,8 @@ export default async function ApprovalsPage({ params, searchParams }: PageProps)
                   {message.companyName ?? '—'}
                 </p>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <SourceBadge source={message.contactSource} />
                 <Badge variant="outline" className="font-medium">
                   {CHANNEL_LABELS[message.channel] ?? message.channel}
                 </Badge>

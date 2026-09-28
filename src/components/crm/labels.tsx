@@ -209,6 +209,31 @@ export const CHANNEL_LABELS: Record<string, string> = {
   whatsapp: 'WhatsApp',
 }
 
+/**
+ * Where a company or contact came from — the values `companies.source` and
+ * `contacts.source` hold, written by whichever intake path stored the row.
+ */
+export const SOURCE_LABELS: Record<string, string> = {
+  serper_places: 'pencarian Maps',
+  serper_search: 'pencarian web',
+  csv: 'unggahan CSV',
+}
+
+/**
+ * Provenance, next to the channel badge on a draft awaiting approval.
+ *
+ * Quiet on purpose — outline, muted, `font-normal`. It is a reminder to the
+ * person about to approve a send, not the headline of the card.
+ */
+export function SourceBadge({ source }: { source: string | null }) {
+  if (source === null) return null
+  return (
+    <Badge variant="outline" className="text-muted-foreground font-normal">
+      Sumber: {SOURCE_LABELS[source] ?? source}
+    </Badge>
+  )
+}
+
 export const ACTIVITY_TYPE_LABELS: Record<string, string> = {
   lead_created: 'Prospek dibuat',
   company_enriched: 'Data perusahaan diperkaya',
